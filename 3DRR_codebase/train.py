@@ -17,7 +17,7 @@ from tqdm import tqdm
 from core.data import Blender
 from core.libs import ConfigDict
 from core.libs.augment import prepare_low_light_batch
-from core.libs.losses import exposure_control_loss, low_light_consistency_loss, rgb_reconstruction_loss
+from core.losses import build_loss_modules, compute_loss_modules
 from core.model import Simple3DGS
 
 
@@ -77,12 +77,8 @@ def train(config_path, device="cuda"):
     print(meta_cfg)
     cfg = meta_cfg.MODEL
     augmentation_cfg = _cfg_get(meta_cfg, "AUGMENTATION", None)
-    loss_cfg = _cfg_get(meta_cfg, "LOSS", None)
     checkpoint_steps = set(resolve_checkpoint_steps(cfg))
-
-    lambda_ssim = float(_cfg_get(loss_cfg, "LAMBDA_SSIM", cfg.LAMBDA_SSIM))
-    lambda_low_light = float(_cfg_get(loss_cfg, "LAMBDA_LOW_LIGHT", 0.0))
-    lambda_exposure = float(_cfg_get(loss_cfg, "LAMBDA_EXPOSURE", 0.0))
+    loss_modules = build_loss_modules(meta_cfg, cfg)
 
     output_dir = build_output_dir(config_path, meta_cfg)
     os.makedirs(os.path.join(output_dir, "examples"), exist_ok=True)
@@ -145,13 +141,15 @@ def train(config_path, device="cuda"):
         H, W = supervision_image.shape[1], supervision_image.shape[2]
         rendered, alphas, info = model(camtoworld, H, W)
 
-        supervision_hwc = supervision_image.permute(1, 2, 0)
-        reference_hwc = reference_image.permute(1, 2, 0)
-
-        rgb_losses = rgb_reconstruction_loss(rendered, supervision_hwc, lambda_ssim=lambda_ssim)
-        low_light_loss = low_light_consistency_loss(rendered, reference_hwc)
-        exposure_loss = exposure_control_loss(rendered, train_batch["target_mean"])
-        loss = rgb_losses["total"] + lambda_low_light * low_light_loss + lambda_exposure * exposure_loss
+        context = {
+            "rendered": rendered,
+            "supervision_hwc": supervision_image.permute(1, 2, 0),
+            "reference_hwc": reference_image.permute(1, 2, 0),
+            "target_mean": train_batch["target_mean"],
+            "data": data,
+            "batch": train_batch,
+        }
+        loss, loss_logs = compute_loss_modules(loss_modules, context)
 
         strategy.step_pre_backward(model.splats, optimizers, strategy_state, step, info)
         loss.backward()
@@ -165,13 +163,13 @@ def train(config_path, device="cuda"):
 
         if step % cfg.LOG_INTERVAL_STEP == 0:
             with torch.no_grad():
-                mse = ((rendered - supervision_hwc) ** 2).mean()
+                mse = ((rendered - context["supervision_hwc"]) ** 2).mean()
                 psnr = -10.0 * math.log10(mse.clamp_min(1e-10).item())
             pbar.set_postfix(
-                loss=f"{loss.item():.4f}",
-                rgb=f"{rgb_losses['total'].item():.4f}",
-                low=f"{low_light_loss.item():.4f}",
-                exp=f"{exposure_loss.item():.4f}",
+                loss=f"{loss_logs['total']:.4f}",
+                rgb=f"{loss_logs.get('rgb', 0.0):.4f}",
+                low=f"{loss_logs.get('low_light', 0.0):.4f}",
+                exp=f"{loss_logs.get('exposure', 0.0):.4f}",
                 psnr=f"{psnr:.2f}",
                 n_gs=model.num_gaussians,
             )

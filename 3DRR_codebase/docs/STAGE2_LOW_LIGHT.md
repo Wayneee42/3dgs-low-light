@@ -7,13 +7,13 @@ Stage 2 migrates the lowest-risk low-light ideas from LITA-GS into the official 
 Stage-2 runs are grouped as:
 
 ```text
-outputs/stage2/<scene>/<timestamp>/
+outputs/stage2/<scene>/
 ```
 
 Examples:
 
-- `outputs/stage2/BlueHawaii/<timestamp>/`
-- `outputs/stage2/Chocolate/<timestamp>/`
+- `outputs/stage2/BlueHawaii/`
+- `outputs/stage2/Chocolate/`
 
 ## What changed
 
@@ -76,5 +76,6 @@ You can compare:
 
 - stage 0: `config/stage0/*.yaml`
 - stage 2: `config/stage2/*.yaml`
+- stage 3: `config/stage3/*.yaml`
 
 This gives you a clean baseline-to-low-light comparison before adding any depth or structure priors.
