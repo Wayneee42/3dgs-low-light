@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import argparse
@@ -27,7 +27,26 @@ def gamma_augment(image, gamma=0.5):
     enhanced = torch.clamp(image, 0, 1).pow(gamma)
     return enhanced
 
+
 # --------------------------------------------------------------------------------
+
+
+def resolve_checkpoint_steps(cfg):
+    checkpoint_steps = getattr(cfg, "CHECKPOINT_STEPS", None)
+    if checkpoint_steps is None:
+        checkpoint_steps = [7000, cfg.TRAIN_TOTAL_STEP]
+    resolved = sorted({int(step) for step in checkpoint_steps if 0 < int(step) <= int(cfg.TRAIN_TOTAL_STEP)})
+    if int(cfg.TRAIN_TOTAL_STEP) not in resolved:
+        resolved.append(int(cfg.TRAIN_TOTAL_STEP))
+    return resolved
+
+
+
+def save_checkpoint(model, output_dir, step):
+    checkpoint_path = os.path.join(output_dir, f"step_{int(step)}.pt")
+    torch.save(model.splats.state_dict(), checkpoint_path)
+    print(f"Checkpoint saved to {checkpoint_path}")
+
 
 
 def train(config_path, device="cuda"):
@@ -35,6 +54,7 @@ def train(config_path, device="cuda"):
     meta_cfg = ConfigDict(config_path=config_path)
     print(meta_cfg)
     cfg = meta_cfg.MODEL
+    checkpoint_steps = set(resolve_checkpoint_steps(cfg))
 
     # build output directory
     output_dir = os.path.join("outputs", meta_cfg.EXP_STR, meta_cfg.TIME_STR)
@@ -66,7 +86,7 @@ def train(config_path, device="cuda"):
         optimizers[name] = torch.optim.Adam([param], lr=lr_map[name], eps=1e-15)
 
     # exponential LR decay for means
-    total_steps = cfg.TRAIN_TOTAL_STEP
+    total_steps = int(cfg.TRAIN_TOTAL_STEP)
     lr_final_factor = cfg.LR_MEANS_FINAL / cfg.LR_MEANS
     schedulers = {
         "means": torch.optim.lr_scheduler.ExponentialLR(
@@ -76,7 +96,7 @@ def train(config_path, device="cuda"):
 
     # densification strategy
     strategy = gsplat.DefaultStrategy(
-        verbose=True,
+        verbose=False,
         refine_start_iter=cfg.DENSIFY_START_STEP,
         refine_stop_iter=cfg.DENSIFY_STOP_STEP,
         refine_every=cfg.DENSIFY_INTERVAL,
@@ -89,6 +109,8 @@ def train(config_path, device="cuda"):
     train_aug_images = []
     pbar = tqdm(range(total_steps))
     for step in pbar:
+        current_step = step + 1
+
         # gradually increase SH degree
         if step > 0 and step % cfg.SH_UPGRADE_INTERVAL == 0:
             model.sh_degree = min(model.sh_degree + 1, model.sh_degree_max)
@@ -98,9 +120,8 @@ def train(config_path, device="cuda"):
 
         # ====================== LOW-LIGHT ENHANCEMENT ======================
         # > TODO:: change this simple implementation
-        
         gt_image = gamma_augment(data["images"].to(device))  # (3, H, W)
-        # ===================================================================
+        # ==================================================================
 
         camtoworld = data["transforms"].to(device)  # (3, 4)
         H, W = gt_image.shape[1], gt_image.shape[2]
@@ -141,17 +162,15 @@ def train(config_path, device="cuda"):
                 save_image(grid, os.path.join(output_dir, "examples", "train_aug.jpg"))
                 train_aug_images = None
 
-        # validation
-        if step > 0 and step % cfg.VAL_INTERVAL_STEP == 0:
-            validate(model, val_dataset, step, device, output_dir)
-            torch.save(model.splats.state_dict(), os.path.join(output_dir, "latest.pt"))
-            print(f"Model saved to {output_dir}/latest.pt")
+        # validation visualization
+        if current_step % cfg.VAL_INTERVAL_STEP == 0:
+            validate(model, val_dataset, current_step, device, output_dir)
 
-    # save model checkpoint
-    torch.save(model.splats.state_dict(), os.path.join(output_dir, "latest.pt"))
-    print(f"Model saved to {output_dir}/latest.pt")
+        # checkpoint schedule
+        if current_step in checkpoint_steps:
+            save_checkpoint(model, output_dir, current_step)
 
-    # run test evaluation
+    # run test evaluation with the final in-memory model
     test_dataset = Blender(meta_cfg.DATASET, split="test", load_images=False)
     evaluate(model, test_dataset, device, output_dir)
 
@@ -166,10 +185,8 @@ def validate(model, val_dataset, step, device, output_dir):
         data = val_dataset[i]
         camtoworld = data["transforms"].to(device)
         rendered, _, _ = model(camtoworld, H, W)
-        # collect first 4 rendered images for visual spot-checking
         if i < 4:
             val_images.append(rendered.permute(2, 0, 1).clamp(0, 1))
-    # save 4 views as a 2x2 grid
     if val_images:
         grid = make_grid(val_images, nrow=2)
         save_image(grid, os.path.join(output_dir, "examples", f"val_step{step}.jpg"))
