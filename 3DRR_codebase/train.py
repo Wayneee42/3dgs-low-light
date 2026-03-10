@@ -14,25 +14,25 @@ from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 
 from core.data import Blender
-from core.libs import ConfigDict, ssim
+from core.libs import ConfigDict
+from core.libs.augment import prepare_low_light_batch
+from core.libs.losses import exposure_control_loss, low_light_consistency_loss, rgb_reconstruction_loss
 from core.model import Simple3DGS
 
 
-# ====================== LOW-LIGHT ENHANCEMENT (GAMMA AUGMENT) ===================
-# This helper applies a gamma correction (gamma < 1 brightens dark regions),
-# used as a simple *low-light enhancement* during training.
-# ================================================================================
 
-def gamma_augment(image, gamma=0.5):
-    enhanced = torch.clamp(image, 0, 1).pow(gamma)
-    return enhanced
+def _cfg_get(cfg, key, default):
+    if cfg is None:
+        return default
+    try:
+        return getattr(cfg, key)
+    except AttributeError:
+        return default
 
-
-# --------------------------------------------------------------------------------
 
 
 def resolve_checkpoint_steps(cfg):
-    checkpoint_steps = getattr(cfg, "CHECKPOINT_STEPS", None)
+    checkpoint_steps = _cfg_get(cfg, "CHECKPOINT_STEPS", None)
     if checkpoint_steps is None:
         checkpoint_steps = [7000, cfg.TRAIN_TOTAL_STEP]
     resolved = sorted({int(step) for step in checkpoint_steps if 0 < int(step) <= int(cfg.TRAIN_TOTAL_STEP)})
@@ -53,7 +53,13 @@ def train(config_path, device="cuda"):
     meta_cfg = ConfigDict(config_path=config_path)
     print(meta_cfg)
     cfg = meta_cfg.MODEL
+    augmentation_cfg = _cfg_get(meta_cfg, "AUGMENTATION", None)
+    loss_cfg = _cfg_get(meta_cfg, "LOSS", None)
     checkpoint_steps = set(resolve_checkpoint_steps(cfg))
+
+    lambda_ssim = float(_cfg_get(loss_cfg, "LAMBDA_SSIM", cfg.LAMBDA_SSIM))
+    lambda_low_light = float(_cfg_get(loss_cfg, "LAMBDA_LOW_LIGHT", 0.0))
+    lambda_exposure = float(_cfg_get(loss_cfg, "LAMBDA_EXPOSURE", 0.0))
 
     output_dir = os.path.join("outputs", meta_cfg.EXP_STR, meta_cfg.TIME_STR)
     os.makedirs(os.path.join(output_dir, "examples"), exist_ok=True)
@@ -107,17 +113,22 @@ def train(config_path, device="cuda"):
             model.sh_degree = min(model.sh_degree + 1, model.sh_degree_max)
 
         data = train_dataset[random.randint(0, num_train - 1)]
+        input_image = data["images"].to(device)
+        train_batch = prepare_low_light_batch(input_image, augmentation_cfg, training=True)
+        supervision_image = train_batch["supervision"]
+        reference_image = train_batch["reference"]
 
-        gt_image = gamma_augment(data["images"].to(device))
         camtoworld = data["transforms"].to(device)
-        H, W = gt_image.shape[1], gt_image.shape[2]
-
+        H, W = supervision_image.shape[1], supervision_image.shape[2]
         rendered, alphas, info = model(camtoworld, H, W)
 
-        gt_hwc = gt_image.permute(1, 2, 0)
-        l1_loss = torch.abs(rendered - gt_hwc).mean()
-        ssim_val = ssim(rendered, gt_hwc)
-        loss = (1.0 - cfg.LAMBDA_SSIM) * l1_loss + cfg.LAMBDA_SSIM * (1.0 - ssim_val)
+        supervision_hwc = supervision_image.permute(1, 2, 0)
+        reference_hwc = reference_image.permute(1, 2, 0)
+
+        rgb_losses = rgb_reconstruction_loss(rendered, supervision_hwc, lambda_ssim=lambda_ssim)
+        low_light_loss = low_light_consistency_loss(rendered, reference_hwc)
+        exposure_loss = exposure_control_loss(rendered, train_batch["target_mean"])
+        loss = rgb_losses["total"] + lambda_low_light * low_light_loss + lambda_exposure * exposure_loss
 
         strategy.step_pre_backward(model.splats, optimizers, strategy_state, step, info)
         loss.backward()
@@ -131,12 +142,19 @@ def train(config_path, device="cuda"):
 
         if step % cfg.LOG_INTERVAL_STEP == 0:
             with torch.no_grad():
-                mse = ((rendered - gt_hwc) ** 2).mean()
+                mse = ((rendered - supervision_hwc) ** 2).mean()
                 psnr = -10.0 * math.log10(mse.clamp_min(1e-10).item())
-            pbar.set_postfix(loss=f"{loss.item():.4f}", psnr=f"{psnr:.2f}", n_gs=model.num_gaussians)
+            pbar.set_postfix(
+                loss=f"{loss.item():.4f}",
+                rgb=f"{rgb_losses['total'].item():.4f}",
+                low=f"{low_light_loss.item():.4f}",
+                exp=f"{exposure_loss.item():.4f}",
+                psnr=f"{psnr:.2f}",
+                n_gs=model.num_gaussians,
+            )
 
         if train_aug_images is not None:
-            train_aug_images.append(gt_image.clamp(0, 1))
+            train_aug_images.append(supervision_image.clamp(0, 1))
             if len(train_aug_images) >= 4:
                 grid = make_grid(train_aug_images[:4], nrow=2)
                 save_image(grid, os.path.join(output_dir, "examples", "train_aug.jpg"))
