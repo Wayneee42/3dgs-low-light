@@ -2,6 +2,19 @@
 
 Stage 2 migrates the lowest-risk low-light ideas from LITA-GS into the official 3DRR training loop without introducing depth, structure priors, or denoiser branches.
 
+## Output structure
+
+Stage-2 runs are grouped as:
+
+```text
+outputs/stage2/<scene>/<timestamp>/
+```
+
+Examples:
+
+- `outputs/stage2/BlueHawaii/<timestamp>/`
+- `outputs/stage2/Chocolate/<timestamp>/`
+
 ## What changed
 
 The training loop in [train.py](D:/github/3dgs-low-light/3DRR_codebase/train.py) is now split conceptually into:

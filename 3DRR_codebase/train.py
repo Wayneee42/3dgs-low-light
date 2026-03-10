@@ -6,6 +6,7 @@ import math
 import os
 import random
 import warnings
+from pathlib import Path
 
 import gsplat
 import torch
@@ -28,6 +29,28 @@ def _cfg_get(cfg, key, default):
         return getattr(cfg, key)
     except AttributeError:
         return default
+
+
+
+def infer_stage_name(config_path, meta_cfg):
+    experiment_cfg = _cfg_get(meta_cfg, "EXPERIMENT", None)
+    explicit_stage = _cfg_get(experiment_cfg, "STAGE", None)
+    if explicit_stage is not None:
+        return str(explicit_stage)
+
+    config_parts = Path(config_path).parts
+    if "config" in config_parts:
+        config_index = config_parts.index("config")
+        if config_index + 1 < len(config_parts) - 1:
+            return config_parts[config_index + 1]
+    return "manual"
+
+
+
+def build_output_dir(config_path, meta_cfg):
+    stage_name = infer_stage_name(config_path, meta_cfg)
+    scene_name = str(meta_cfg.DATASET.NAME)
+    return os.path.join("outputs", stage_name, scene_name)
 
 
 
@@ -61,7 +84,7 @@ def train(config_path, device="cuda"):
     lambda_low_light = float(_cfg_get(loss_cfg, "LAMBDA_LOW_LIGHT", 0.0))
     lambda_exposure = float(_cfg_get(loss_cfg, "LAMBDA_EXPOSURE", 0.0))
 
-    output_dir = os.path.join("outputs", meta_cfg.EXP_STR, meta_cfg.TIME_STR)
+    output_dir = build_output_dir(config_path, meta_cfg)
     os.makedirs(os.path.join(output_dir, "examples"), exist_ok=True)
     os.makedirs(os.path.join(output_dir, "test"), exist_ok=True)
     with open(os.path.join(output_dir, "config.yaml"), "w") as f:

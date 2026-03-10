@@ -20,6 +20,22 @@ Stage 0 does not include:
 - denoiser migration
 - any COLMAP-based replacement of official camera metadata
 
+## Output structure
+
+Stage-based output layout is now fixed as:
+
+```text
+outputs/
+├─ stage0/
+│  └─ Chocolate/
+│     └─ <timestamp>/
+└─ stage2/
+   └─ BlueHawaii/
+      └─ <timestamp>/
+```
+
+That means stage-0 runs are grouped under `outputs/stage0/<scene>/`.
+
 ## Actual official layout in this repo
 
 The repo contains two different official layouts, and stage 0 now freezes both as-is instead of forcing them into one artificial shape.
@@ -120,7 +136,7 @@ python train.py -c config/stage0/bluehawaii.yaml
 Each run keeps the default output structure:
 
 ```text
-outputs/<experiment>/<timestamp>/
+outputs/stage0/<scene>/<timestamp>/
 ├─ config.yaml
 ├─ step_7000.pt
 ├─ step_30000.pt
@@ -133,7 +149,7 @@ outputs/<experiment>/<timestamp>/
 `eval.py` loads a specific checkpoint path and renders the test set again.
 
 ```powershell
-python eval.py -w outputs/<experiment>/<timestamp>/step_30000.pt
+python eval.py -w outputs/stage0/<scene>/<timestamp>/step_30000.pt
 ```
 
 For the stage-0 training schedule, use `step_30000.pt` as the final checkpoint.
