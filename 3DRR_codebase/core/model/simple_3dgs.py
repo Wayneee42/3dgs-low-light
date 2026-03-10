@@ -1,4 +1,4 @@
-# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
+﻿# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import torch
 import torch.nn as nn
@@ -7,11 +7,6 @@ from gsplat import rasterization
 
 class Simple3DGS(nn.Module):
     def __init__(self, model_cfg, data_info):
-        """
-        Args:
-            model_cfg: OmegaConf config with NUM_INIT_POINTS, SH_DEGREE, etc.
-            data_info: dict with keys "fl_x", "fl_y", "cx", "cy", "bg_color".
-        """
         super().__init__()
         self.fl_x = data_info["fl_x"]
         self.fl_y = data_info["fl_y"]
@@ -19,21 +14,19 @@ class Simple3DGS(nn.Module):
         self.cy = data_info["cy"]
         self.bg_color = data_info["bg_color"]
         self.sh_degree_max = model_cfg.SH_DEGREE
-        self.sh_degree = 0  # will be increased during training
+        self.sh_degree = 0
 
         num_points = model_cfg.NUM_INIT_POINTS
         num_sh_bases = (self.sh_degree_max + 1) ** 2
 
-        # Random initialization
-        means = (torch.rand(num_points, 3) - 0.5) * 10.0  # uniform in [-3, 3]
+        means = (torch.rand(num_points, 3) - 0.5) * 10.0
         quats = torch.zeros(num_points, 4)
-        quats[:, 0] = 1.0  # identity rotation
-        scales = torch.log(torch.full((num_points, 3), 0.005))  # small initial size
+        quats[:, 0] = 1.0
+        scales = torch.log(torch.full((num_points, 3), 0.005))
         opacities = torch.logit(torch.full((num_points,), 0.1))
-        sh0 = torch.zeros(num_points, 1, 3)  # DC term (~gray after SH eval + 0.5 bias)
+        sh0 = torch.zeros(num_points, 1, 3)
         shN = torch.zeros(num_points, num_sh_bases - 1, 3)
 
-        # Store as ParameterDict for gsplat strategy compatibility
         self.splats = nn.ParameterDict(
             {
                 "means": nn.Parameter(means),
@@ -49,33 +42,16 @@ class Simple3DGS(nn.Module):
     def num_gaussians(self):
         return self.splats["means"].shape[0]
 
-    def forward(self, camtoworld, img_h, img_w):
-        """
-        Render an image from the given camera pose.
-
-        Args:
-            camtoworld: (3, 4) camera-to-world transformation matrix.
-            img_h: image height in pixels.
-            img_w: image width in pixels.
-        Returns:
-            rendered: (H, W, 3) rendered RGB image.
-            alphas: (H, W, 1) rendered alpha map.
-            info: dict with rasterization metadata (used by densification strategy).
-        """
+    def forward(self, camtoworld, img_h, img_w, return_depth=False, depth_render_mode="RGB+ED"):
         device = self.splats["means"].device
 
-        # Build world-to-camera view matrix (4x4)
-        # NeRF Synthetic uses OpenGL convention (camera looks down -Z),
-        # gsplat expects OpenCV convention (camera looks down +Z),
-        # so we flip Y and Z axes after inversion.
         c2w = torch.eye(4, device=device, dtype=torch.float32)
         c2w[:3, :] = camtoworld.to(device)
         viewmat = torch.linalg.inv(c2w)
-        viewmat[1, :] *= -1  # flip Y
-        viewmat[2, :] *= -1  # flip Z
-        viewmat = viewmat[None]  # (1, 4, 4)
+        viewmat[1, :] *= -1
+        viewmat[2, :] *= -1
+        viewmat = viewmat[None]
 
-        # Build intrinsics from calibrated parameters
         K = torch.tensor(
             [
                 [self.fl_x, 0.0, self.cx],
@@ -84,10 +60,11 @@ class Simple3DGS(nn.Module):
             ],
             dtype=torch.float32,
             device=device,
-        )[None]  # (1, 3, 3)
+        )[None]
 
         colors = torch.cat([self.splats["sh0"], self.splats["shN"]], dim=1)
         bg = torch.full((1, 3), self.bg_color, dtype=torch.float32, device=device)
+        render_mode = depth_render_mode if return_depth else "RGB"
 
         renders, alphas, info = rasterization(
             means=self.splats["means"],
@@ -101,9 +78,12 @@ class Simple3DGS(nn.Module):
             height=img_h,
             sh_degree=self.sh_degree,
             backgrounds=bg,
-            render_mode="RGB",
+            render_mode=render_mode,
             packed=False,
         )
 
-        # renders: (1, H, W, 3), alphas: (1, H, W, 1)
-        return renders[0], alphas[0], info
+        if return_depth:
+            rendered_rgb = renders[0][..., :3]
+            rendered_depth = renders[0][..., 3:4]
+            return rendered_rgb, rendered_depth, alphas[0], info
+        return renders[0], None, alphas[0], info

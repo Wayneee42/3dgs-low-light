@@ -3,7 +3,6 @@
 
 import argparse
 import json
-import math
 import os
 import warnings
 
@@ -99,7 +98,7 @@ def evaluate(checkpoint_path, device="cuda"):
     for i in tqdm(range(num_test), desc="Rendering"):
         data = test_dataset[i]
         camtoworld = data["transforms"].to(device)
-        rendered, _, _ = model(camtoworld, H, W)
+        rendered, _, _, _ = model(camtoworld, H, W, return_depth=False)
         frame_key = data["infos"]["frame_key"]
         save_image(
             rendered.permute(2, 0, 1).clamp(0, 1),
