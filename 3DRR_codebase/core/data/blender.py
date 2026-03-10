@@ -8,6 +8,10 @@ import torch
 import torchvision
 
 
+STRUCTURE_MODALITY_ALIASES = ("prior",)
+
+
+
 def build_frame_key(file_path):
     split_name, file_name = file_path.split("/")[-2:]
     return f"{split_name}_{Path(file_name).stem}"
@@ -59,13 +63,15 @@ class Blender(torch.utils.data.Dataset):
             },
             "low_light_image": None,
             "depth": None,
+            "structure": None,
             "prior": None,
         }
         if self._load_images:
             one_record_data["images"] = record["img_tensor"]
             one_record_data["low_light_image"] = record["low_light_tensor"]
             one_record_data["depth"] = record["depth_tensor"]
-            one_record_data["prior"] = record["prior_tensor"]
+            one_record_data["structure"] = record["structure_tensor"]
+            one_record_data["prior"] = record["structure_tensor"]
         return one_record_data
 
     def _load_data(self):
@@ -100,7 +106,7 @@ class Blender(torch.utils.data.Dataset):
                 "img_tensor": None,
                 "low_light_tensor": None,
                 "depth_tensor": None,
-                "prior_tensor": None,
+                "structure_tensor": None,
                 "transform_matrix": transform_matrix,
             }
         return records, meta_info
@@ -113,34 +119,47 @@ class Blender(torch.utils.data.Dataset):
             image_tensor = load_img(record["file_path"], channel=3).float() / 255.0
             low_light_tensor = self._load_optional_auxiliary(record["frame_key"], "lowlight", channel=3)
             depth_tensor = self._load_optional_auxiliary(record["frame_key"], "depth", channel=1)
-            prior_tensor = self._load_optional_auxiliary(record["frame_key"], "prior", channel=1)
-            return key, image_tensor[:3], low_light_tensor, depth_tensor, prior_tensor
+            structure_tensor = self._load_optional_auxiliary(
+                record["frame_key"],
+                "structure",
+                channel=1,
+                aliases=STRUCTURE_MODALITY_ALIASES,
+            )
+            return key, image_tensor[:3], low_light_tensor, depth_tensor, structure_tensor
 
         print(f"Load data [{self._requested_split}]: [{len(self._records)}].")
         with ThreadPoolExecutor(max_workers=min(multiprocessing.cpu_count(), 16)) as executor:
             all_records = list(executor.map(lambda item: _load_record_assets(item[0], item[1]), self._records.items()))
-        for key, image, low_light, depth, prior in all_records:
+        for key, image, low_light, depth, structure in all_records:
             self._records[key]["img_tensor"] = image
             self._records[key]["low_light_tensor"] = low_light
             self._records[key]["depth_tensor"] = depth
-            self._records[key]["prior_tensor"] = prior
+            self._records[key]["structure_tensor"] = structure
 
-    def _load_optional_auxiliary(self, frame_key, modality, channel):
-        aux_path = resolve_auxiliary_path(self._scene_root, self._auxiliary_dir, modality, frame_key)
+    def _load_optional_auxiliary(self, frame_key, modality, channel, aliases=()):
+        aux_path = resolve_auxiliary_path(
+            self._scene_root,
+            self._auxiliary_dir,
+            modality,
+            frame_key,
+            aliases=aliases,
+        )
         if aux_path is None:
             return None
         return load_img(aux_path, channel=channel).float() / 255.0
 
 
 
-def resolve_auxiliary_path(scene_root, auxiliary_dir, modality, frame_key):
-    modality_root = Path(scene_root) / auxiliary_dir / modality
-    if not modality_root.exists():
-        return None
-    for extension in (".png", ".jpg", ".jpeg", ".JPG", ".JPEG"):
-        candidate = modality_root / f"{frame_key}{extension}"
-        if candidate.exists():
-            return str(candidate)
+def resolve_auxiliary_path(scene_root, auxiliary_dir, modality, frame_key, aliases=()):
+    modality_names = (modality,) + tuple(aliases)
+    for modality_name in modality_names:
+        modality_root = Path(scene_root) / auxiliary_dir / modality_name
+        if not modality_root.exists():
+            continue
+        for extension in (".png", ".jpg", ".jpeg", ".JPG", ".JPEG"):
+            candidate = modality_root / f"{frame_key}{extension}"
+            if candidate.exists():
+                return str(candidate)
     return None
 
 

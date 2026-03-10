@@ -17,9 +17,10 @@ Each sample now returns:
 - `infos.relative_path`
 - `low_light_image` as an optional field
 - `depth` as an optional field
-- `prior` as an optional field
+- `structure` as an optional field
 
 The optional fields default to `None` and do not block training if they are absent.
+`prior` is still exposed as a legacy alias for `structure` so older experiments do not break.
 
 ## Frame binding rule
 
@@ -45,16 +46,17 @@ Optional modalities are resolved from:
 
 ```text
 scene_root/
-├─ auxiliaries/
-│  ├─ lowlight/
-│  │  └─ train_0001.png
-│  ├─ depth/
-│  │  └─ train_0001.png
-│  └─ prior/
-│     └─ train_0001.png
+|- auxiliaries/
+|  |- lowlight/
+|  |  \- train_0001.png
+|  |- depth/
+|  |  \- train_0001.png
+|  \- structure/
+|     \- train_0001.png
 ```
 
 The default root is `auxiliaries/`, configurable by `AUXILIARY_DIR` in the dataset config.
+For backward compatibility, `auxiliaries/prior/` is also accepted as a legacy alias for `structure/`.
 
 ## Camera convention notes
 

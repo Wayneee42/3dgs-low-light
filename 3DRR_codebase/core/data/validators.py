@@ -6,7 +6,10 @@ from .blender import build_frame_key, resolve_auxiliary_path
 
 REQUIRED_INTRINSICS = ("h", "w", "fl_x", "fl_y", "cx", "cy")
 REQUIRED_TRANSFORM_KEYS = ("transform_matrix", "file_path")
-OPTIONAL_MODALITIES = ("lowlight", "depth", "prior")
+OPTIONAL_MODALITIES = ("lowlight", "depth", "structure")
+MODALITY_ALIASES = {
+    "structure": ("prior",),
+}
 
 
 
@@ -42,14 +45,14 @@ def validate_split(scene_root, json_path, split, auxiliary_dir):
 
     errors = []
     warnings = []
-    for key in REQUIRED_INTRINSICS:
-        if key not in metadata:
-            errors.append(f"{json_path.name}: missing intrinsic key '{key}'")
-
     frame_keys = []
     image_root = scene_root / split
     if split == "val" and not image_root.exists():
         warnings.append(f"{split}: image directory missing, acceptable if this split is render-only")
+
+    for key in REQUIRED_INTRINSICS:
+        if key not in metadata:
+            errors.append(f"{json_path.name}: missing intrinsic key '{key}'")
 
     for frame in metadata.get("frames", []):
         for key in REQUIRED_TRANSFORM_KEYS:
@@ -65,9 +68,11 @@ def validate_split(scene_root, json_path, split, auxiliary_dir):
         if split == "train" and not image_path.exists():
             errors.append(f"missing image for frame {frame_key}: {image_path}")
         for modality in OPTIONAL_MODALITIES:
-            aux_path = resolve_auxiliary_path(scene_root, auxiliary_dir, modality, frame_key)
-            modality_root = scene_root / auxiliary_dir / modality
-            if modality_root.exists() and aux_path is None:
+            aliases = MODALITY_ALIASES.get(modality, ())
+            aux_path = resolve_auxiliary_path(scene_root, auxiliary_dir, modality, frame_key, aliases=aliases)
+            modality_roots = [scene_root / auxiliary_dir / modality]
+            modality_roots.extend(scene_root / auxiliary_dir / alias for alias in aliases)
+            if any(root.exists() for root in modality_roots) and aux_path is None:
                 warnings.append(f"missing optional {modality} for frame {frame_key}")
 
     return {

@@ -1,6 +1,8 @@
 ﻿from core.libs.losses import exposure_control_loss, low_light_consistency_loss, rgb_reconstruction_loss
 import torch
 
+from .structure_prior import build_structure_extractor
+
 
 class BaseLossModule:
     def __init__(self, name, weight=1.0, enabled=True):
@@ -99,9 +101,7 @@ class DepthPriorLoss(BaseLossModule):
         depth_target = depth_target.to(rendered_depth.device)
         if depth_target.dim() == 3:
             depth_target = depth_target.squeeze(0)
-        elif depth_target.dim() == 2:
-            depth_target = depth_target
-        else:
+        elif depth_target.dim() != 2:
             raise RuntimeError(f"Unsupported depth tensor shape: {tuple(depth_target.shape)}")
 
         global_loss = pearson_depth_loss(rendered_depth.reshape(-1), depth_target.reshape(-1))
@@ -114,8 +114,31 @@ class DepthPriorLoss(BaseLossModule):
 
 
 class StructurePriorLoss(BaseLossModule):
-    def __init__(self, weight):
+    def __init__(self, weight, invariant="W", kernel_size=3, scale=0.8):
         super().__init__(name="structure_prior", weight=weight, enabled=weight > 0.0)
+        self.extractor = build_structure_extractor(
+            invariant=str(invariant),
+            kernel_size=int(kernel_size),
+            scale=float(scale),
+        )
 
     def compute(self, context):
-        raise NotImplementedError("StructurePriorLoss interface is registered in stage 4, but its implementation starts in stage 5.")
+        structure_target = context.get("structure")
+        if structure_target is None:
+            zero = torch.zeros((), device=context["rendered"].device, dtype=context["rendered"].dtype)
+            return zero, {"available": 0.0}
+
+        rendered = context["rendered"].permute(2, 0, 1).unsqueeze(0)
+        structure_target = structure_target.to(device=rendered.device, dtype=rendered.dtype)
+        if structure_target.dim() == 2:
+            structure_target = structure_target.unsqueeze(0).unsqueeze(0)
+        elif structure_target.dim() == 3 and structure_target.shape[0] == 1:
+            structure_target = structure_target.unsqueeze(0)
+        else:
+            raise RuntimeError(f"Unsupported structure tensor shape: {tuple(structure_target.shape)}")
+
+        self.extractor = self.extractor.to(device=rendered.device, dtype=rendered.dtype)
+        predicted_structure = self.extractor(rendered).clamp(0.0, 1.0)
+        target_structure = structure_target.clamp(0.0, 1.0)
+        loss = torch.abs(predicted_structure - target_structure).mean()
+        return loss, {"available": 1.0}

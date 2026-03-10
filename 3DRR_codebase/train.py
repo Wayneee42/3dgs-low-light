@@ -160,6 +160,7 @@ def train(config_path, device="cuda"):
             "data": data,
             "batch": train_batch,
             "depth": data["depth"].to(device) if data["depth"] is not None else None,
+            "structure": data["structure"].to(device) if data["structure"] is not None else None,
         }
         loss, loss_logs = compute_loss_modules(loss_modules, context)
 
@@ -183,8 +184,9 @@ def train(config_path, device="cuda"):
                 low=f"{loss_logs.get('low_light', 0.0):.4f}",
                 exp=f"{loss_logs.get('exposure', 0.0):.4f}",
                 dep=f"{loss_logs.get('depth_prior', 0.0):.4f}",
-                psnr=f"{psnr:.2f}",
+                st=f"{loss_logs.get('structure_prior', 0.0):.4f}",
                 n_gs=model.num_gaussians,
+                psnr=f"{psnr:.2f}",
             )
 
         if train_aug_images is not None:

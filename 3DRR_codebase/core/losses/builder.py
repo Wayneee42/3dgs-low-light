@@ -43,7 +43,14 @@ def build_loss_modules(meta_cfg, model_cfg):
             )
         )
     if bool(_cfg_get(structure_cfg, "ENABLED", False)):
-        modules.append(StructurePriorLoss(weight=float(_cfg_get(structure_cfg, "WEIGHT", 0.0))))
+        modules.append(
+            StructurePriorLoss(
+                weight=float(_cfg_get(structure_cfg, "WEIGHT", 0.0)),
+                invariant=str(_cfg_get(structure_cfg, "INVARIANT", "W")),
+                kernel_size=int(_cfg_get(structure_cfg, "KERNEL_SIZE", 3)),
+                scale=float(_cfg_get(structure_cfg, "SCALE", 0.8)),
+            )
+        )
 
     return [module for module in modules if module.enabled]
 

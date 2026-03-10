@@ -19,6 +19,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from core.data import build_frame_key
+from core.losses.structure_prior import build_structure_extractor
 
 
 
@@ -38,33 +39,39 @@ def iter_scene_frames(scene_root):
             yield build_frame_key(relative_path), image_path
 
 
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Extract Marigold monocular depth priors for an official Blender scene.")
+    parser = argparse.ArgumentParser(description="Extract CIConv-based structure priors for an official Blender scene.")
     parser.add_argument("scene_root", type=str, help="Path to an official Blender scene root")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to the Marigold checkpoint directory")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--auxiliary-dir", type=str, default="auxiliaries")
+    parser.add_argument("--invariant", type=str, default="W")
+    parser.add_argument("--kernel-size", type=int, default=3)
+    parser.add_argument("--scale", type=float, default=0.8)
     parser.add_argument("--skip-existing", action="store_true")
     args = parser.parse_args()
 
-    from marigold import MarigoldPipeline
-
-    pipe = MarigoldPipeline.from_pretrained(args.checkpoint).to(args.device)
+    extractor = build_structure_extractor(
+        invariant=args.invariant,
+        kernel_size=args.kernel_size,
+        scale=args.scale,
+    ).to(args.device)
+    extractor.eval()
 
     scene_root = Path(args.scene_root)
-    depth_root = scene_root / args.auxiliary_dir / "depth"
-    depth_root.mkdir(parents=True, exist_ok=True)
+    structure_root = scene_root / args.auxiliary_dir / "structure"
+    structure_root.mkdir(parents=True, exist_ok=True)
 
     frames = list(iter_scene_frames(scene_root))
     with torch.no_grad():
-        for frame_key, image_path in tqdm(frames, desc="Estimating Marigold depth"):
-            output_path = depth_root / f"{frame_key}.png"
+        for frame_key, image_path in tqdm(frames, desc="Extracting structure priors"):
+            output_path = structure_root / f"{frame_key}.png"
             if args.skip_existing and output_path.exists():
                 continue
 
             input_image = Image.open(image_path).convert("RGB")
-            depth_pred = pipe(input_image).depth_np
-            depth_pred = np.clip(depth_pred, 0.0, 1.0)
-            depth_uint8 = (depth_pred * 255.0).astype(np.uint8)
-            Image.fromarray(depth_uint8).save(output_path)
+            image_np = np.asarray(input_image, dtype=np.float32) / 255.0
+            image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).unsqueeze(0).to(args.device)
+
+            structure = extractor(image_tensor).squeeze(0).squeeze(0).clamp(0.0, 1.0).cpu().numpy()
+            structure_uint8 = np.rint(structure * 255.0).astype(np.uint8)
+            Image.fromarray(structure_uint8, mode="L").save(output_path)
