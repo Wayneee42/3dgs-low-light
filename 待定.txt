@@ -1,0 +1,4 @@
+1. 现有代码库中，RGB监督的是低照增强图像，而LITA-GS的RGB监督的是原图。
+2. 现有代码库中，未引入illumination head（只有RGB、depth、structure）。
+3. 现有代码库中，损失函数未引入reconstruction loss。
+4. 现有代码库中，未引入denoising模块和denoising loss。
