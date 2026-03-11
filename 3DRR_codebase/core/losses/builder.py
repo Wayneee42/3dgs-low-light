@@ -1,4 +1,4 @@
-﻿import torch
+import torch
 
 from .modules import (
     DepthPriorLoss,
@@ -36,6 +36,7 @@ def build_loss_modules(meta_cfg, model_cfg):
         modules.append(
             DepthPriorLoss(
                 weight=float(_cfg_get(depth_cfg, "WEIGHT", 0.0)),
+                start_step=int(_cfg_get(depth_cfg, "START_STEP", 0)),
                 global_weight=float(_cfg_get(depth_cfg, "GLOBAL_WEIGHT", 1.0)),
                 local_weight=float(_cfg_get(depth_cfg, "LOCAL_WEIGHT", 1.0)),
                 box_size=int(_cfg_get(depth_cfg, "BOX_SIZE", 128)),
@@ -46,9 +47,7 @@ def build_loss_modules(meta_cfg, model_cfg):
         modules.append(
             StructurePriorLoss(
                 weight=float(_cfg_get(structure_cfg, "WEIGHT", 0.0)),
-                invariant=str(_cfg_get(structure_cfg, "INVARIANT", "W")),
-                kernel_size=int(_cfg_get(structure_cfg, "KERNEL_SIZE", 3)),
-                scale=float(_cfg_get(structure_cfg, "SCALE", 0.8)),
+                start_step=int(_cfg_get(structure_cfg, "START_STEP", 0)),
             )
         )
 
@@ -73,5 +72,15 @@ def compute_loss_modules(modules, context):
 
 
 
+def required_aux_heads(loss_modules):
+    heads = []
+    if any(module.name == "depth_prior" for module in loss_modules):
+        heads.append("depth")
+    if any(module.name == "structure_prior" for module in loss_modules):
+        heads.append("prior")
+    return tuple(heads)
+
+
+
 def requires_depth_render(loss_modules):
-    return any(module.name == "depth_prior" for module in loss_modules)
+    return "depth" in required_aux_heads(loss_modules)

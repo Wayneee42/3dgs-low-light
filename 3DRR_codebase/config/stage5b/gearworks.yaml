@@ -1,6 +1,6 @@
 DATASET:
-  NAME: 'Laboratory'
-  DATA_PATH: 'dataset/Development/lowlight_development/development/Laboratory'
+  NAME: 'GearWorks'
+  DATA_PATH: 'dataset/Development/lowlight_development/development/GearWorks'
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
@@ -53,13 +53,14 @@ PRIORS:
     SAMPLE_RATIO: 0.5
     START_STEP: 5000
   STRUCTURE:
-    ENABLED: false
-    WEIGHT: 0.0
-    START_STEP: 0
+    ENABLED: true
+    WEIGHT: 0.01
+    START_STEP: 10000
     INVARIANT: 'W'
     KERNEL_SIZE: 3
     SCALE: 0.8
 
 EXPERIMENT:
-  STAGE: 'stage4'
+  STAGE: 'stage5b'
+
 

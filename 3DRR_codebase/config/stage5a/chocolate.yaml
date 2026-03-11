@@ -1,6 +1,6 @@
 DATASET:
-  NAME: 'Laboratory'
-  DATA_PATH: 'dataset/Development/lowlight_development/development/Laboratory'
+  NAME: 'Chocolate'
+  DATA_PATH: 'dataset/Development/lowlight_development/development/Chocolate'
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
@@ -45,21 +45,22 @@ LOSS:
 
 PRIORS:
   DEPTH:
-    ENABLED: true
-    WEIGHT: 0.02
+    ENABLED: false
+    WEIGHT: 0.0
     GLOBAL_WEIGHT: 1.0
     LOCAL_WEIGHT: 1.0
     BOX_SIZE: 128
     SAMPLE_RATIO: 0.5
-    START_STEP: 5000
-  STRUCTURE:
-    ENABLED: false
-    WEIGHT: 0.0
     START_STEP: 0
+  STRUCTURE:
+    ENABLED: true
+    WEIGHT: 0.01
+    START_STEP: 5000
     INVARIANT: 'W'
     KERNEL_SIZE: 3
     SCALE: 0.8
 
 EXPERIMENT:
-  STAGE: 'stage4'
+  STAGE: 'stage5a'
+
 

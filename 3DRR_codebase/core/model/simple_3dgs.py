@@ -1,4 +1,4 @@
-﻿# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
+# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import torch
 import torch.nn as nn
@@ -26,6 +26,8 @@ class Simple3DGS(nn.Module):
         opacities = torch.logit(torch.full((num_points,), 0.1))
         sh0 = torch.zeros(num_points, 1, 3)
         shN = torch.zeros(num_points, num_sh_bases - 1, 3)
+        depth_feat = torch.zeros(num_points, 1)
+        prior_feat = torch.zeros(num_points, 1)
 
         self.splats = nn.ParameterDict(
             {
@@ -35,6 +37,8 @@ class Simple3DGS(nn.Module):
                 "opacities": nn.Parameter(opacities),
                 "sh0": nn.Parameter(sh0),
                 "shN": nn.Parameter(shN),
+                "depth_feat": nn.Parameter(depth_feat),
+                "prior_feat": nn.Parameter(prior_feat),
             }
         )
 
@@ -42,9 +46,8 @@ class Simple3DGS(nn.Module):
     def num_gaussians(self):
         return self.splats["means"].shape[0]
 
-    def forward(self, camtoworld, img_h, img_w, return_depth=False, depth_render_mode="RGB+ED"):
+    def _build_camera(self, camtoworld):
         device = self.splats["means"].device
-
         c2w = torch.eye(4, device=device, dtype=torch.float32)
         c2w[:3, :] = camtoworld.to(device)
         viewmat = torch.linalg.inv(c2w)
@@ -52,7 +55,7 @@ class Simple3DGS(nn.Module):
         viewmat[2, :] *= -1
         viewmat = viewmat[None]
 
-        K = torch.tensor(
+        intrinsics = torch.tensor(
             [
                 [self.fl_x, 0.0, self.cx],
                 [0.0, self.fl_y, self.cy],
@@ -61,29 +64,72 @@ class Simple3DGS(nn.Module):
             dtype=torch.float32,
             device=device,
         )[None]
+        return viewmat, intrinsics
 
-        colors = torch.cat([self.splats["sh0"], self.splats["shN"]], dim=1)
-        bg = torch.full((1, 3), self.bg_color, dtype=torch.float32, device=device)
-        render_mode = depth_render_mode if return_depth else "RGB"
-
-        renders, alphas, info = rasterization(
+    def _rasterize(self, colors, viewmats, intrinsics, img_h, img_w, backgrounds, sh_degree):
+        return rasterization(
             means=self.splats["means"],
             quats=self.splats["quats"],
             scales=torch.exp(self.splats["scales"]),
             opacities=torch.sigmoid(self.splats["opacities"]),
             colors=colors,
-            viewmats=viewmat,
-            Ks=K,
+            viewmats=viewmats,
+            Ks=intrinsics,
             width=img_w,
             height=img_h,
-            sh_degree=self.sh_degree,
-            backgrounds=bg,
-            render_mode=render_mode,
+            sh_degree=sh_degree,
+            backgrounds=backgrounds,
+            render_mode="RGB",
             packed=False,
         )
 
-        if return_depth:
-            rendered_rgb = renders[0][..., :3]
-            rendered_depth = renders[0][..., 3:4]
-            return rendered_rgb, rendered_depth, alphas[0], info
-        return renders[0], None, alphas[0], info
+    def render_rgb(self, camtoworld, img_h, img_w):
+        device = self.splats["means"].device
+        viewmats, intrinsics = self._build_camera(camtoworld)
+        colors = torch.cat([self.splats["sh0"], self.splats["shN"]], dim=1)
+        backgrounds = torch.full((1, 3), self.bg_color, dtype=torch.float32, device=device)
+        renders, alphas, info = self._rasterize(
+            colors=colors,
+            viewmats=viewmats,
+            intrinsics=intrinsics,
+            img_h=img_h,
+            img_w=img_w,
+            backgrounds=backgrounds,
+            sh_degree=self.sh_degree,
+        )
+        return renders[0], alphas[0], info
+
+    def render_aux_heads(self, camtoworld, img_h, img_w, heads):
+        device = self.splats["means"].device
+        viewmats, intrinsics = self._build_camera(camtoworld)
+        backgrounds = torch.zeros((1, 3), dtype=torch.float32, device=device)
+        outputs = {}
+        for head in heads:
+            feature_name = f"{head}_feat"
+            if feature_name not in self.splats:
+                outputs[head] = None
+                continue
+            scalar_feature = self.splats[feature_name]
+            colors = scalar_feature.repeat(1, 3)
+            renders, _, _ = self._rasterize(
+                colors=colors,
+                viewmats=viewmats,
+                intrinsics=intrinsics,
+                img_h=img_h,
+                img_w=img_w,
+                backgrounds=backgrounds,
+                sh_degree=None,
+            )
+            outputs[head] = renders[0].mean(dim=-1, keepdim=True)
+        return outputs
+
+    def forward(self, camtoworld, img_h, img_w, render_heads=()):
+        rgb, alphas, info = self.render_rgb(camtoworld, img_h, img_w)
+        head_outputs = self.render_aux_heads(camtoworld, img_h, img_w, render_heads) if render_heads else {}
+        return {
+            "rgb": rgb,
+            "depth_aux": head_outputs.get("depth"),
+            "prior_aux": head_outputs.get("prior"),
+            "alphas": alphas,
+            "info": info,
+        }

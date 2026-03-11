@@ -1,4 +1,4 @@
-﻿DATASET:
+DATASET:
   NAME: 'Chocolate'
   DATA_PATH: 'dataset/Development/lowlight_development/development/Chocolate'
   BACKGROUND_COLOR: 255.0
@@ -46,15 +46,20 @@ LOSS:
 PRIORS:
   DEPTH:
     ENABLED: true
-    WEIGHT: 0.10
+    WEIGHT: 0.02
     GLOBAL_WEIGHT: 1.0
     LOCAL_WEIGHT: 1.0
     BOX_SIZE: 128
     SAMPLE_RATIO: 0.5
-    RENDER_MODE: 'RGB+ED'
+    START_STEP: 5000
   STRUCTURE:
     ENABLED: false
     WEIGHT: 0.0
+    START_STEP: 0
+    INVARIANT: 'W'
+    KERNEL_SIZE: 3
+    SCALE: 0.8
 
 EXPERIMENT:
   STAGE: 'stage4'
+

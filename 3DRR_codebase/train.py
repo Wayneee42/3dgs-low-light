@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import argparse
@@ -17,7 +17,7 @@ from tqdm import tqdm
 from core.data import Blender
 from core.libs import ConfigDict
 from core.libs.augment import prepare_low_light_batch
-from core.losses import build_loss_modules, compute_loss_modules, requires_depth_render
+from core.losses import build_loss_modules, compute_loss_modules, required_aux_heads
 from core.model import Simple3DGS
 
 
@@ -79,7 +79,7 @@ def train(config_path, device="cuda"):
     augmentation_cfg = _cfg_get(meta_cfg, "AUGMENTATION", None)
     checkpoint_steps = set(resolve_checkpoint_steps(cfg))
     loss_modules = build_loss_modules(meta_cfg, cfg)
-    render_depth = requires_depth_render(loss_modules)
+    aux_heads = required_aux_heads(loss_modules)
 
     output_dir = build_output_dir(config_path, meta_cfg)
     os.makedirs(os.path.join(output_dir, "examples"), exist_ok=True)
@@ -101,6 +101,8 @@ def train(config_path, device="cuda"):
         "opacities": cfg.LR_OPACITIES,
         "sh0": cfg.LR_SH0,
         "shN": cfg.LR_SHN,
+        "depth_feat": cfg.LR_SHN,
+        "prior_feat": cfg.LR_SHN,
     }
     optimizers = {}
     for name, param in model.splats.items():
@@ -124,9 +126,6 @@ def train(config_path, device="cuda"):
     )
     strategy_state = strategy.initialize_state(scene_scale=cfg.SCENE_SCALE)
 
-    depth_cfg = _cfg_get(_cfg_get(meta_cfg, "PRIORS", None), "DEPTH", None)
-    depth_render_mode = str(_cfg_get(depth_cfg, "RENDER_MODE", "RGB+ED"))
-
     train_aug_images = []
     pbar = tqdm(range(total_steps))
     for step in pbar:
@@ -143,17 +142,14 @@ def train(config_path, device="cuda"):
 
         camtoworld = data["transforms"].to(device)
         H, W = supervision_image.shape[1], supervision_image.shape[2]
-        rendered, rendered_depth, alphas, info = model(
-            camtoworld,
-            H,
-            W,
-            return_depth=render_depth,
-            depth_render_mode=depth_render_mode,
-        )
+        render_outputs = model(camtoworld, H, W, render_heads=aux_heads)
+        rendered = render_outputs["rgb"]
 
         context = {
+            "step": current_step,
             "rendered": rendered,
-            "rendered_depth": rendered_depth,
+            "depth_aux": render_outputs["depth_aux"],
+            "prior_aux": render_outputs["prior_aux"],
             "supervision_hwc": supervision_image.permute(1, 2, 0),
             "reference_hwc": reference_image.permute(1, 2, 0),
             "target_mean": train_batch["target_mean"],
@@ -164,9 +160,9 @@ def train(config_path, device="cuda"):
         }
         loss, loss_logs = compute_loss_modules(loss_modules, context)
 
-        strategy.step_pre_backward(model.splats, optimizers, strategy_state, step, info)
+        strategy.step_pre_backward(model.splats, optimizers, strategy_state, step, render_outputs["info"])
         loss.backward()
-        strategy.step_post_backward(model.splats, optimizers, strategy_state, step, info, packed=False)
+        strategy.step_post_backward(model.splats, optimizers, strategy_state, step, render_outputs["info"], packed=False)
 
         for opt in optimizers.values():
             opt.step()
@@ -184,7 +180,10 @@ def train(config_path, device="cuda"):
                 low=f"{loss_logs.get('low_light', 0.0):.4f}",
                 exp=f"{loss_logs.get('exposure', 0.0):.4f}",
                 dep=f"{loss_logs.get('depth_prior', 0.0):.4f}",
+                dep_g=f"{loss_logs.get('depth_prior_global', 0.0):.4f}",
+                dep_l=f"{loss_logs.get('depth_prior_local', 0.0):.4f}",
                 st=f"{loss_logs.get('structure_prior', 0.0):.4f}",
+                st_a=f"{loss_logs.get('structure_prior_available', 0.0):.0f}",
                 n_gs=model.num_gaussians,
                 psnr=f"{psnr:.2f}",
             )
@@ -215,7 +214,8 @@ def validate(model, val_dataset, step, device, output_dir):
     for i in range(num_val):
         data = val_dataset[i]
         camtoworld = data["transforms"].to(device)
-        rendered, _, _, _ = model(camtoworld, H, W, return_depth=False)
+        render_outputs = model(camtoworld, H, W, render_heads=())
+        rendered = render_outputs["rgb"]
         if i < 4:
             val_images.append(rendered.permute(2, 0, 1).clamp(0, 1))
     if val_images:
@@ -233,7 +233,8 @@ def evaluate(model, test_dataset, device, output_dir):
     for i in range(num_test):
         data = test_dataset[i]
         camtoworld = data["transforms"].to(device)
-        rendered, _, _, _ = model(camtoworld, H, W, return_depth=False)
+        render_outputs = model(camtoworld, H, W, render_heads=())
+        rendered = render_outputs["rgb"]
         frame_key = data["infos"]["frame_key"]
         save_image(
             rendered.permute(2, 0, 1).clamp(0, 1),
