@@ -72,18 +72,18 @@
 
 ```mermaid
 flowchart LR
-  A\[输入: 低照度多视角图像 + 精确Pose] --> B\[线性化/颜色空间处理<br/>sRGB->linear 或 RAW]
-  B --> C\[噪声与曝光估计<br/>NLF/Poisson-Gaussian参数/不确定性]
-  B --> D\[视角级成像映射<br/>颜色矩阵 + 曲线/tonemapper]
-  C --> E\[3DGS渲染器<br/>可选: 颜色MLP替代SH]
+  A\\\\\\\[输入: 低照度多视角图像 + 精确Pose] --> B\\\\\\\[线性化/颜色空间处理<br/>sRGB->linear 或 RAW]
+  B --> C\\\\\\\[噪声与曝光估计<br/>NLF/Poisson-Gaussian参数/不确定性]
+  B --> D\\\\\\\[视角级成像映射<br/>颜色矩阵 + 曲线/tonemapper]
+  C --> E\\\\\\\[3DGS渲染器<br/>可选: 颜色MLP替代SH]
   D --> E
-  E --> F\[噪声感知重建损失<br/>NLL + 鲁棒项 + 特征度量]
-  A --> G\[几何先验分支<br/>MVS/单目深度/法线/结构先验]
-  G --> H\[几何一致性正则<br/>depth-normal/曲率/TSDF/SDF]
+  E --> F\\\\\\\[噪声感知重建损失<br/>NLL + 鲁棒项 + 特征度量]
+  A --> G\\\\\\\[几何先验分支<br/>MVS/单目深度/法线/结构先验]
+  G --> H\\\\\\\[几何一致性正则<br/>depth-normal/曲率/TSDF/SDF]
   H --> E
-  C --> I\[自适应采样/密度控制<br/>抑制噪声高斯]
+  C --> I\\\\\\\[自适应采样/密度控制<br/>抑制噪声高斯]
   I --> E
-  F --> J\[优化: 高斯参数 + 成像/噪声模块 + 先验权重调度]
+  F --> J\\\\\\\[优化: 高斯参数 + 成像/噪声模块 + 先验权重调度]
 ```
 
 ### 噪声感知的像素似然监督
@@ -97,7 +97,7 @@ flowchart LR
 **集成点（3DGS）**  
 把当前 photometric loss：
 
-* `L = (1-λ)\*L1 + λ\*SSIM`（3DGS/LITA-GS/Luminance-GS 常用类似混合）citeturn18view0turn5view0turn30view0  
+* `L = (1-λ)\\\\\\\*L1 + λ\\\\\\\*SSIM`（3DGS/LITA-GS/Luminance-GS 常用类似混合）citeturn18view0turn5view0turn30view0  
 替换/增强为像素级负对数似然（NLL）：
 * 近似方案：异方差高斯 `σ^2(x)=a·I(x)+b`（NLF），NLL `((I-Î)^2 / (2σ^2) + 0.5 log σ^2)`
 * 更物理方案：Poisson-Gaussian（若可在线性域近似）。
@@ -118,14 +118,11 @@ flowchart LR
 
 1. baseline L1+SSIM
 2. 
-
-   * 异方差权重（不加 log σ）
+* 异方差权重（不加 log σ）
 3. 
-
-   * 完整 NLL（含 log σ）
+* 完整 NLL（含 log σ）
 4. 
-
-   * “SSIM 仅作用 intrinsic”  
+* “SSIM 仅作用 intrinsic”  
 并监控：噪声高斯数量、covariance 细长程度分布、几何指标（见评测节）。
 
 ### 训练期的视角一致曝光/色调映射模块
@@ -202,7 +199,7 @@ flowchart LR
 **集成点（3DGS）**  
 两条路线：
 
-* **属性驱动（LITA-GS）**：`noise\_attr` → 渲染噪声图 `N\_GS` → PDM 输出 `N` 与 `R\_clean`citeturn30view1turn30view0
+* **属性驱动（LITA-GS）**：`noise\\\\\\\_attr` → 渲染噪声图 `N\\\\\\\_GS` → PDM 输出 `N` 与 `R\\\\\\\_clean`citeturn30view1turn30view0
 * **网络驱动（Chaos→Clarity 风格）**：渲染结果 → noise extractor → 估计噪声分布参数/噪声成分 → 用 noise-robust loss 更新。
 
 **需要的数据/标签**  
@@ -230,7 +227,7 @@ LE3D 指出在 RAW 线性颜色空间下，SH 的表达能力可能不足，提�
 **集成点（3DGS）**  
 保持几何参数不变，把颜色从 `SH coeffs` 改为：
 
-* `feature vector per Gaussian` + `small MLP(view\_dir, feature)` 输出颜色  
+* `feature vector per Gaussian` + `small MLP(view\\\\\\\_dir, feature)` 输出颜色  
 或采用混合：低阶 SH + residual MLP（稳定且易控）。
 
 **需要的数据/标签**  
@@ -325,8 +322,7 @@ LE3D 指出在 RAW 线性颜色空间下，SH 的表达能力可能不足，提�
 
 * baseline 3DGS + 你的深度/结构先验
 * 
-
-  * SuGaR 正则
+* SuGaR 正则
 * 改 2DGS（若做）  
 对比几何完整性与漂浮物。
 
@@ -354,11 +350,9 @@ LE3D 指出在 RAW 线性颜色空间下，SH 的表达能力可能不足，提�
 
 * baseline + 深度/结构先验
 * 
-
-  * SDF 粗几何约束（固定 SDF 或只训练前期）
+* SDF 粗几何约束（固定 SDF 或只训练前期）
 * 
-
-  * 交替优化（若做）  
+* 交替优化（若做）  
 重点观察几何 completeness 与暗区洞。
 
 ### 基于不确定性的损失自适应、采样与 densification 控制
@@ -388,11 +382,9 @@ Gaussian-DK 的“按距离缩放梯度”用于抑制近处 floaters，是一�
 * 固定 loss weights
 * 只做 loss 加权
 * 
-
-  * 采样策略
+* 采样策略
 * 
-
-  * densification gating  
+* densification gating  
 并记录：高斯数量、训练稳定性、几何完整性。
 
 ### 扩散/生成先验作为“颜色/照明合理化”的正则（谨慎但潜力大）
@@ -632,36 +624,36 @@ LL-Gaussian 本身给出了某些权重在迭代中“先高后低/先低后高�
 - From Chaos to Clarity: 3DGS in the Dark (NeurIPS 2024): https://arxiv.org/abs/2406.08300
 - LE3D: Lighting Every Darkness with 3DGS (NeurIPS 2024): https://arxiv.org/abs/2406.06216  | code: https://github.com/Srameo/LE3D
 - LITA-GS (CVPR 2025): https://arxiv.org/pdf/2504.00219  | code: https://github.com/LowLevelAI/LITA-GS
-- Luminance-GS (CVPR 2025): https://openaccess.thecvf.com/content/CVPR2025/papers/Cui\_Luminance-GS\_Adapting\_3D\_Gaussian\_Splatting\_to\_Challenging\_Lighting\_Conditions\_with\_CVPR\_2025\_paper.pdf  | code: https://github.com/cuiziteng/Luminance-GS
+- Luminance-GS (CVPR 2025): https://openaccess.thecvf.com/content/CVPR2025/papers/Cui\\\\\\\_Luminance-GS\\\\\\\_Adapting\\\\\\\_3D\\\\\\\_Gaussian\\\\\\\_Splatting\\\\\\\_to\\\\\\\_Challenging\\\\\\\_Lighting\\\\\\\_Conditions\\\\\\\_with\\\\\\\_CVPR\\\\\\\_2025\\\\\\\_paper.pdf  | code: https://github.com/cuiziteng/Luminance-GS
 - LL-Gaussian (ACM MM 2025 / arXiv): https://arxiv.org/html/2504.10331v3  | code: https://github.com/sunhao242/LL-Gaussian
 
 低照度神经渲染/成像
-- RawNeRF / NeRF in the Dark (CVPR 2022): https://openaccess.thecvf.com/content/CVPR2022/papers/Mildenhall\_NeRF\_in\_the\_Dark\_High\_Dynamic\_Range\_View\_Synthesis\_From\_CVPR\_2022\_paper.pdf  | project: https://bmild.github.io/rawnerf/
-- HDR-NeRF (CVPR 2022): https://openaccess.thecvf.com/content/CVPR2022/papers/Huang\_HDR-NeRF\_High\_Dynamic\_Range\_Neural\_Radiance\_Fields\_CVPR\_2022\_paper.pdf
-- LLNeRF / Lighting up NeRF (ICCV 2023): https://openaccess.thecvf.com/content/ICCV2023/papers/Wang\_Lighting\_up\_NeRF\_via\_Unsupervised\_Decomposition\_and\_Enhancement\_ICCV\_2023\_paper.pdf  | code: https://github.com/onpix/LLNeRF
+- RawNeRF / NeRF in the Dark (CVPR 2022): https://openaccess.thecvf.com/content/CVPR2022/papers/Mildenhall\\\\\\\_NeRF\\\\\\\_in\\\\\\\_the\\\\\\\_Dark\\\\\\\_High\\\\\\\_Dynamic\\\\\\\_Range\\\\\\\_View\\\\\\\_Synthesis\\\\\\\_From\\\\\\\_CVPR\\\\\\\_2022\\\\\\\_paper.pdf  | project: https://bmild.github.io/rawnerf/
+- HDR-NeRF (CVPR 2022): https://openaccess.thecvf.com/content/CVPR2022/papers/Huang\\\\\\\_HDR-NeRF\\\\\\\_High\\\\\\\_Dynamic\\\\\\\_Range\\\\\\\_Neural\\\\\\\_Radiance\\\\\\\_Fields\\\\\\\_CVPR\\\\\\\_2022\\\\\\\_paper.pdf
+- LLNeRF / Lighting up NeRF (ICCV 2023): https://openaccess.thecvf.com/content/ICCV2023/papers/Wang\\\\\\\_Lighting\\\\\\\_up\\\\\\\_NeRF\\\\\\\_via\\\\\\\_Unsupervised\\\\\\\_Decomposition\\\\\\\_and\\\\\\\_Enhancement\\\\\\\_ICCV\\\\\\\_2023\\\\\\\_paper.pdf  | code: https://github.com/onpix/LLNeRF
 - Aleth-NeRF (AAAI 2024) + LOM dataset: https://ojs.aaai.org/index.php/AAAI/article/view/27908  | code/dataset: https://github.com/cuiziteng/Aleth-NeRF
 
 几何先验/表面重建
-- SuGaR (CVPR 2024): https://openaccess.thecvf.com/content/CVPR2024/papers/Guedon\_SuGaR\_Surface-Aligned\_Gaussian\_Splatting\_for\_Efficient\_3D\_Mesh\_Reconstruction\_and\_CVPR\_2024\_paper.pdf  | code: https://github.com/Anttwo/SuGaR
+- SuGaR (CVPR 2024): https://openaccess.thecvf.com/content/CVPR2024/papers/Guedon\\\\\\\_SuGaR\\\\\\\_Surface-Aligned\\\\\\\_Gaussian\\\\\\\_Splatting\\\\\\\_for\\\\\\\_Efficient\\\\\\\_3D\\\\\\\_Mesh\\\\\\\_Reconstruction\\\\\\\_and\\\\\\\_CVPR\\\\\\\_2024\\\\\\\_paper.pdf  | code: https://github.com/Anttwo/SuGaR
 - 2D Gaussian Splatting (SIGGRAPH 2024): https://arxiv.org/abs/2403.17888  | code: https://github.com/hbb1/2d-gaussian-splatting
-- VCR-GauS (NeurIPS 2024): https://proceedings.neurips.cc/paper\_files/paper/2024/hash/fc9f83d9925e6885e8f1ae1e17b3c44b-Abstract-Conference.html  | code: https://github.com/HLinChen/VCR-GauS
-- SurfaceSplat (ICCV 2025): https://openaccess.thecvf.com/content/ICCV2025/papers/Gao\_SurfaceSplat\_Connecting\_Surface\_Reconstruction\_and\_Gaussian\_Splatting\_ICCV\_2025\_paper.pdf
+- VCR-GauS (NeurIPS 2024): https://proceedings.neurips.cc/paper\\\\\\\_files/paper/2024/hash/fc9f83d9925e6885e8f1ae1e17b3c44b-Abstract-Conference.html  | code: https://github.com/HLinChen/VCR-GauS
+- SurfaceSplat (ICCV 2025): https://openaccess.thecvf.com/content/ICCV2025/papers/Gao\\\\\\\_SurfaceSplat\\\\\\\_Connecting\\\\\\\_Surface\\\\\\\_Reconstruction\\\\\\\_and\\\\\\\_Gaussian\\\\\\\_Splatting\\\\\\\_ICCV\\\\\\\_2025\\\\\\\_paper.pdf
 - NeuS (2021): https://arxiv.org/abs/2106.10689
 - VolSDF (NeurIPS 2021): https://proceedings.neurips.cc/paper/2021/file/25e2a30f44898b9f3e978b1786dcd85c-Paper.pdf
 
 MVS/初始化
-- PatchmatchNet (CVPR 2021): https://openaccess.thecvf.com/content/CVPR2021/papers/Wang\_PatchmatchNet\_Learned\_Multi-View\_Patchmatch\_Stereo\_CVPR\_2021\_paper.pdf
-- DUSt3R (CVPR 2024): https://openaccess.thecvf.com/content/CVPR2024/papers/Wang\_DUSt3R\_Geometric\_3D\_Vision\_Made\_Easy\_CVPR\_2024\_paper.pdf
+- PatchmatchNet (CVPR 2021): https://openaccess.thecvf.com/content/CVPR2021/papers/Wang\\\\\\\_PatchmatchNet\\\\\\\_Learned\\\\\\\_Multi-View\\\\\\\_Patchmatch\\\\\\\_Stereo\\\\\\\_CVPR\\\\\\\_2021\\\\\\\_paper.pdf
+- DUSt3R (CVPR 2024): https://openaccess.thecvf.com/content/CVPR2024/papers/Wang\\\\\\\_DUSt3R\\\\\\\_Geometric\\\\\\\_3D\\\\\\\_Vision\\\\\\\_Made\\\\\\\_Easy\\\\\\\_CVPR\\\\\\\_2024\\\\\\\_paper.pdf
 
 低照度增强/扩散先验（可选）
-- Retinexformer (ICCV 2023): https://openaccess.thecvf.com/content/ICCV2023/html/Cai\_Retinexformer\_One-stage\_Retinex-based\_Transformer\_for\_Low-light\_Image\_Enhancement\_ICCV\_2023\_paper.html
-- SCI (CVPR 2022): https://openaccess.thecvf.com/content/CVPR2022/papers/Ma\_Toward\_Fast\_Flexible\_and\_Robust\_Low-Light\_Image\_Enhancement\_CVPR\_2022\_paper.pdf
-- LightenDiffusion (ECCV 2024): https://www.ecva.net/papers/eccv\_2024/papers\_ECCV/papers/06440.pdf
+- Retinexformer (ICCV 2023): https://openaccess.thecvf.com/content/ICCV2023/html/Cai\\\\\\\_Retinexformer\\\\\\\_One-stage\\\\\\\_Retinex-based\\\\\\\_Transformer\\\\\\\_for\\\\\\\_Low-light\\\\\\\_Image\\\\\\\_Enhancement\\\\\\\_ICCV\\\\\\\_2023\\\\\\\_paper.html
+- SCI (CVPR 2022): https://openaccess.thecvf.com/content/CVPR2022/papers/Ma\\\\\\\_Toward\\\\\\\_Fast\\\\\\\_Flexible\\\\\\\_and\\\\\\\_Robust\\\\\\\_Low-Light\\\\\\\_Image\\\\\\\_Enhancement\\\\\\\_CVPR\\\\\\\_2022\\\\\\\_paper.pdf
+- LightenDiffusion (ECCV 2024): https://www.ecva.net/papers/eccv\\\\\\\_2024/papers\\\\\\\_ECCV/papers/06440.pdf
 - StableSR (IJCV 2024): https://link.springer.com/article/10.1007/s11263-024-02168-7
 
 噪声建模
 - Noise2NoiseFlow (CVPR 2022): https://arxiv.org/abs/2206.01103
-- FBI-Denoiser (CVPR 2021): https://openaccess.thecvf.com/content/CVPR2021/papers/Byun\_FBI-Denoiser\_Fast\_Blind\_Image\_Denoiser\_for\_Poisson-Gaussian\_Noise\_CVPR\_2021\_paper.pdf
+- FBI-Denoiser (CVPR 2021): https://openaccess.thecvf.com/content/CVPR2021/papers/Byun\\\\\\\_FBI-Denoiser\\\\\\\_Fast\\\\\\\_Blind\\\\\\\_Image\\\\\\\_Denoiser\\\\\\\_for\\\\\\\_Poisson-Gaussian\\\\\\\_Noise\\\\\\\_CVPR\\\\\\\_2021\\\\\\\_paper.pdf
 
 评测数据集（GT几何/多视角）
 - DTU: https://roboimagedata.compute.dtu.dk/
@@ -682,15 +674,15 @@ quadrantChart
   quadrant-2 高收益/高工作量
   quadrant-3 低收益/低工作量
   quadrant-4 低收益/高工作量
-  NLL/异方差似然: \[0.15, 0.85]
-  视角曲线+颜色矩阵: \[0.35, 0.80]
-  不确定性采样+密度控制: \[0.40, 0.70]
-  depth-normal一致正则: \[0.45, 0.65]
-  双分支Intrinsic/Transient: \[0.75, 0.85]
-  扩散先验正则: \[0.70, 0.55]
-  SuGaR表面对齐: \[0.55, 0.60]
-  2DGS表示替换: \[0.90, 0.70]
-  SDF–GS混合: \[0.95, 0.80]
+  NLL/异方差似然: \\\\\\\[0.15, 0.85]
+  视角曲线+颜色矩阵: \\\\\\\[0.35, 0.80]
+  不确定性采样+密度控制: \\\\\\\[0.40, 0.70]
+  depth-normal一致正则: \\\\\\\[0.45, 0.65]
+  双分支Intrinsic/Transient: \\\\\\\[0.75, 0.85]
+  扩散先验正则: \\\\\\\[0.70, 0.55]
+  SuGaR表面对齐: \\\\\\\[0.55, 0.60]
+  2DGS表示替换: \\\\\\\[0.90, 0.70]
+  SDF–GS混合: \\\\\\\[0.95, 0.80]
 ```
 
 > 注：象限图用于“排期与取舍”，不是对论文结论的复述。建议从左上角三项先做起，然后再投入高工作量项目。

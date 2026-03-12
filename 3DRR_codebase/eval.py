@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import argparse
@@ -61,7 +61,6 @@ def write_metric_outputs(ckpt_dir, summary, per_view):
     print(f"Per-view metrics written to {per_view_path}")
 
 
-
 @torch.no_grad()
 def evaluate(checkpoint_path, device="cuda"):
     ckpt_dir = os.path.dirname(checkpoint_path)
@@ -98,7 +97,8 @@ def evaluate(checkpoint_path, device="cuda"):
     for i in tqdm(range(num_test), desc="Rendering"):
         data = test_dataset[i]
         camtoworld = data["transforms"].to(device)
-        rendered, _, _, _ = model(camtoworld, H, W, return_depth=False)
+        render_outputs = model(camtoworld, H, W, render_heads=())
+        rendered = render_outputs["rgb"]
         frame_key = data["infos"]["frame_key"]
         save_image(
             rendered.permute(2, 0, 1).clamp(0, 1),
