@@ -92,12 +92,10 @@ def local_pearson_loss(depth_src, depth_target, box_size, sample_ratio):
 def squeeze_single_channel(image_tensor, label):
     if image_tensor is None:
         return None
-    if image_tensor.dim() == 2:
-        return image_tensor
     if image_tensor.dim() == 3 and image_tensor.shape[0] == 1:
         return image_tensor.squeeze(0)
-    if image_tensor.dim() == 3 and image_tensor.shape[-1] == 1:
-        return image_tensor.squeeze(-1)
+    if image_tensor.dim() == 2:
+        return image_tensor
     raise RuntimeError(f"Unsupported {label} tensor shape: {tuple(image_tensor.shape)}")
 
 
