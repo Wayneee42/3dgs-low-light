@@ -35,3 +35,6 @@ PRIORS:
 
 If `PRIORS.DEPTH.ENABLED` is true and a training frame has no depth prior, training fails with a clear frame-key error.
 This is intentional so stage-4 runs stay auditable.
+
+
+
