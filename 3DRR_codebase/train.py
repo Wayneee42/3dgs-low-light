@@ -104,7 +104,21 @@ def train(config_path, device="cuda"):
     val_dataset = Blender(meta_cfg.DATASET, split="val", load_images=False)
     num_train = len(train_dataset._records_keys)
 
-    model = Simple3DGS(cfg, train_dataset._data_info).to(device)
+    init_records = []
+    for key in train_dataset._records_keys:
+        rec = train_dataset._records[key]
+        init_records.append(
+            {
+                "frame_key": rec["frame_key"],
+                "transform_matrix": rec["transform_matrix"],
+            }
+        )
+    init_context = {
+        "scene_root": str(meta_cfg.DATASET.DATA_PATH),
+        "records": init_records,
+    }
+
+    model = Simple3DGS(cfg, train_dataset._data_info, init_context=init_context).to(device)
     print(f"Initialized {model.num_gaussians} Gaussians")
 
     lr_map = {

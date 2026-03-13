@@ -3,6 +3,7 @@ python eval.py -w outputs/stage2/BlueHawaii/step_15000/step_15000.pt
 python eval.py -w outputs/stage2/BlueHawaii/step_30000/step_30000.pt
 
 python tools/extract_marigold_depth.py dataset/Validation/lowlight_validation/validation/BlueHawaii --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+python tools/align_depth_scales.py dataset/Validation/lowlight_validation/validation/BlueHawaii
 python tools/extract_structure_prior.py dataset/Validation/lowlight_validation/validation/BlueHawaii --device cuda --skip-existing
 python train.py -c config/stage4/bluehawaii.yaml
 python eval.py -w outputs/stage4/BlueHawaii/step_15000/step_15000.pt
@@ -15,3 +16,22 @@ python eval.py -w outputs/stage5a/BlueHawaii/step_30000/step_30000.pt
 python train.py -c config/stage5b/bluehawaii.yaml
 python eval.py -w outputs/stage5b/BlueHawaii/step_15000/step_15000.pt
 python eval.py -w outputs/stage5b/BlueHawaii/step_30000/step_30000.pt
+
+
+Development场景先验：
+
+python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Chocolate --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+python tools/align_depth_scales.py dataset/Development/lowlight_development/development/Chocolate
+python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Chocolate --device cuda --skip-existing
+
+python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Cupcake --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+python tools/align_depth_scales.py dataset/Development/lowlight_development/development/Cupcake
+python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Cupcake --device cuda --skip-existing
+
+python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/GearWorks --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+python tools/align_depth_scales.py dataset/Development/lowlight_development/development/GearWorks
+python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/GearWorks --device cuda --skip-existing
+
+python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Laboratory --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+python tools/align_depth_scales.py dataset/Development/lowlight_development/development/Laboratory
+python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Laboratory --device cuda --skip-existing
