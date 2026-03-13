@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 # Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import argparse
@@ -13,6 +13,7 @@ import torch
 import yaml
 from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
+import numpy as np
 
 from core.data import Blender
 from core.libs import ConfigDict
@@ -22,6 +23,16 @@ from core.model import Simple3DGS
 
 
 
+
+def set_seed(seed):
+    seed = int(seed)
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 def _cfg_get(cfg, key, default):
     if cfg is None:
         return default
@@ -89,6 +100,9 @@ def save_checkpoint(model, output_dir, step, meta_cfg):
 
 def train(config_path, device="cuda"):
     meta_cfg = ConfigDict(config_path=config_path)
+    seed = int(_cfg_get(meta_cfg, 'SEED', 3407))
+    set_seed(seed)
+    print(f'[Seed] {seed}')
     print(meta_cfg)
     cfg = meta_cfg.MODEL
     augmentation_cfg = _cfg_get(meta_cfg, "AUGMENTATION", None)
@@ -111,6 +125,7 @@ def train(config_path, device="cuda"):
             {
                 "frame_key": rec["frame_key"],
                 "transform_matrix": rec["transform_matrix"],
+                "file_path": rec["file_path"],
             }
         )
     init_context = {
@@ -290,3 +305,6 @@ if __name__ == "__main__":
     print("Command Line Args: {}".format(args))
 
     train(args.config_path)
+
+
+

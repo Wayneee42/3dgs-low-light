@@ -1,6 +1,6 @@
 ﻿DATASET:
-  NAME: 'Chocolate'
-  DATA_PATH: 'dataset/Development/lowlight_development/development/Chocolate'
+  NAME: 'BlueHawaii'
+  DATA_PATH: 'dataset/Validation/lowlight_validation/validation/BlueHawaii'
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
@@ -9,13 +9,16 @@ SEED: 3407
 MODEL:
   NAME: 'Simple3DGS'
   NUM_INIT_POINTS: 100000
-  INIT_MODE: 'depth_backproject'
+  INIT_MODE: 'hybrid_anchor'
+  INIT_ANCHOR_RATIO: 0.10
+  INIT_ANCHOR_MAX_DEPTH_GRAD: 0.08
+  INIT_ANCHOR_BRIGHTNESS_QUANTILE: 0.0
   INIT_DEPTH_DIR: 'auxiliaries/depth'
   INIT_DEPTH_NORMALIZATION: 'per_frame_robust'
   INIT_DEPTH_NORM_LOW_Q: 1.0
   INIT_DEPTH_NORM_HIGH_Q: 99.0
   INIT_VOXEL_DOWNSAMPLE: true
-  INIT_VOXEL_SIZE: 0.01
+  INIT_VOXEL_SIZE: 0.03
   INIT_BACKPROJECT_NEAR: 0.2
   INIT_BACKPROJECT_FAR: 6.0
   INIT_BACKPROJECT_SAMPLE_STRIDE: 4
@@ -28,7 +31,7 @@ MODEL:
   VAL_INTERVAL_STEP: 5000
   LOG_INTERVAL_STEP: 100
   SH_UPGRADE_INTERVAL: 1000
-  CHECKPOINT_STEPS: [7000, 30000]
+  CHECKPOINT_STEPS: [15000, 30000]
   LR_MEANS: 1.6e-4
   LR_MEANS_FINAL: 1.6e-6
   LR_QUATS: 1.0e-3
@@ -68,20 +71,14 @@ PRIORS:
     SAMPLE_RATIO: 0.5
     START_STEP: 5000
   STRUCTURE:
-    ENABLED: false
-    WEIGHT: 0.0
-    START_STEP: 0
+    ENABLED: true
+    WEIGHT: 0.01
+    START_STEP: 10000
     INVARIANT: 'W'
     KERNEL_SIZE: 3
     SCALE: 0.8
 
 EXPERIMENT:
-  STAGE: 'stage4'
-
-
-
-
-
-
+  STAGE: 'stage5b'
 
 

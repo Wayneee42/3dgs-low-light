@@ -4,6 +4,8 @@
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
+SEED: 3407
+
 MODEL:
   NAME: 'Simple3DGS'
   NUM_INIT_POINTS: 100000
@@ -75,6 +77,7 @@ PRIORS:
 
 EXPERIMENT:
   STAGE: 'stage5b'
+
 
 
 

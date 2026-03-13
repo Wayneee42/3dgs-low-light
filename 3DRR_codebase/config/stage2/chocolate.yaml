@@ -3,6 +3,8 @@
   DATA_PATH: 'dataset/Development/lowlight_development/development/Chocolate'
   BACKGROUND_COLOR: 255.0
 
+SEED: 3407
+
 MODEL:
   NAME: 'Simple3DGS'
   NUM_INIT_POINTS: 100000
@@ -41,3 +43,4 @@ LOSS:
   LAMBDA_SSIM: 0.2
   LAMBDA_LOW_LIGHT: 0.10
   LAMBDA_EXPOSURE: 0.05
+
