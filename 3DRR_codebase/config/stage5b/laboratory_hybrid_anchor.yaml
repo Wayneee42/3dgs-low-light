@@ -1,10 +1,10 @@
-﻿DATASET:
-  NAME: 'BlueHawaii'
-  DATA_PATH: 'dataset/Validation/lowlight_validation/validation/BlueHawaii'
+DATASET:
+  NAME: 'Laboratory'
+  DATA_PATH: 'dataset/Development/lowlight_development/development/Laboratory'
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
-SEED: 3407
+SEED: 3407Cupcake
 
 MODEL:
   NAME: 'Simple3DGS'
@@ -31,7 +31,7 @@ MODEL:
   VAL_INTERVAL_STEP: 5000
   LOG_INTERVAL_STEP: 100
   SH_UPGRADE_INTERVAL: 1000
-  CHECKPOINT_STEPS: [15000, 20000， 25000， 30000]
+  CHECKPOINT_STEPS: [15000, 20000, 25000, 30000]
   LR_MEANS: 1.6e-4
   LR_MEANS_FINAL: 1.6e-6
   LR_QUATS: 1.0e-3
