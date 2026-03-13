@@ -61,10 +61,21 @@ def write_metric_outputs(ckpt_dir, summary, per_view):
     print(f"Per-view metrics written to {per_view_path}")
 
 
+
+def resolve_config_path(ckpt_dir):
+    local_config = os.path.join(ckpt_dir, "config.yaml")
+    if os.path.exists(local_config):
+        return local_config
+    parent_config = os.path.join(os.path.dirname(ckpt_dir), "config.yaml")
+    if os.path.exists(parent_config):
+        return parent_config
+    raise FileNotFoundError(f"No config.yaml found in '{ckpt_dir}' or its parent directory.")
+
+
 @torch.no_grad()
 def evaluate(checkpoint_path, device="cuda"):
     ckpt_dir = os.path.dirname(checkpoint_path)
-    config_path = os.path.join(ckpt_dir, "config.yaml")
+    config_path = resolve_config_path(ckpt_dir)
     with open(config_path) as f:
         config_dict = yaml.load(f, Loader=yaml.Loader)
     config_dict["EXP_STR"] = ""

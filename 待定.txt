@@ -1,5 +1,0 @@
-1. 给 depth_feat / prior_feat 单独降学习率
-2. 把 P_r 的启用时机再后移，放到 densify 结束后
-2. 现有代码库中，未引入illumination head（只有RGB、depth、structure）。
-3. 现有代码库中，损失函数未引入reconstruction loss。
-4. 现有代码库中，未引入denoising模块和denoising loss。

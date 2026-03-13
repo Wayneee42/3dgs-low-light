@@ -54,6 +54,17 @@ def build_output_dir(config_path, meta_cfg):
 
 
 
+def build_step_dir(output_dir, step):
+    return os.path.join(output_dir, f"step_{int(step)}")
+
+
+
+def save_config(path, meta_cfg):
+    with open(path, "w") as f:
+        yaml.dump(dict(meta_cfg), f, default_flow_style=False)
+
+
+
 def resolve_checkpoint_steps(cfg):
     checkpoint_steps = _cfg_get(cfg, "CHECKPOINT_STEPS", None)
     if checkpoint_steps is None:
@@ -65,10 +76,14 @@ def resolve_checkpoint_steps(cfg):
 
 
 
-def save_checkpoint(model, output_dir, step):
-    checkpoint_path = os.path.join(output_dir, f"step_{int(step)}.pt")
+def save_checkpoint(model, output_dir, step, meta_cfg):
+    step_dir = build_step_dir(output_dir, step)
+    os.makedirs(step_dir, exist_ok=True)
+    save_config(os.path.join(step_dir, "config.yaml"), meta_cfg)
+    checkpoint_path = os.path.join(step_dir, f"step_{int(step)}.pt")
     torch.save(model.splats.state_dict(), checkpoint_path)
     print(f"Checkpoint saved to {checkpoint_path}")
+    return checkpoint_path
 
 
 
@@ -82,10 +97,8 @@ def train(config_path, device="cuda"):
     aux_heads = required_aux_heads(loss_modules)
 
     output_dir = build_output_dir(config_path, meta_cfg)
-    os.makedirs(os.path.join(output_dir, "examples"), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "test"), exist_ok=True)
-    with open(os.path.join(output_dir, "config.yaml"), "w") as f:
-        yaml.dump(dict(meta_cfg), f, default_flow_style=False)
+    os.makedirs(output_dir, exist_ok=True)
+    save_config(os.path.join(output_dir, "config.yaml"), meta_cfg)
 
     train_dataset = Blender(meta_cfg.DATASET, split="train")
     val_dataset = Blender(meta_cfg.DATASET, split="val", load_images=False)
@@ -191,23 +204,29 @@ def train(config_path, device="cuda"):
         if train_aug_images is not None:
             train_aug_images.append(supervision_image.clamp(0, 1))
             if len(train_aug_images) >= 4:
+                step_dir = build_step_dir(output_dir, current_step)
+                os.makedirs(os.path.join(step_dir, "examples"), exist_ok=True)
                 grid = make_grid(train_aug_images[:4], nrow=2)
-                save_image(grid, os.path.join(output_dir, "examples", "train_aug.jpg"))
+                save_image(grid, os.path.join(step_dir, "examples", "train_aug.jpg"))
                 train_aug_images = None
 
         if current_step % cfg.VAL_INTERVAL_STEP == 0:
             validate(model, val_dataset, current_step, device, output_dir)
 
         if current_step in checkpoint_steps:
-            save_checkpoint(model, output_dir, current_step)
+            save_checkpoint(model, output_dir, current_step, meta_cfg)
 
     test_dataset = Blender(meta_cfg.DATASET, split="test", load_images=False)
-    evaluate(model, test_dataset, device, output_dir)
+    evaluate(model, test_dataset, device, output_dir, total_steps)
 
 
 @torch.no_grad()
 def validate(model, val_dataset, step, device, output_dir):
     model.eval()
+    step_dir = build_step_dir(output_dir, step)
+    examples_dir = os.path.join(step_dir, "examples")
+    os.makedirs(examples_dir, exist_ok=True)
+
     H, W = val_dataset._data_info["img_h"], val_dataset._data_info["img_w"]
     num_val = len(val_dataset._records_keys)
     val_images = []
@@ -220,14 +239,18 @@ def validate(model, val_dataset, step, device, output_dir):
             val_images.append(rendered.permute(2, 0, 1).clamp(0, 1))
     if val_images:
         grid = make_grid(val_images, nrow=2)
-        save_image(grid, os.path.join(output_dir, "examples", f"val_step{step}.jpg"))
+        save_image(grid, os.path.join(examples_dir, f"val_step{step}.jpg"))
     print(f"\n[Step {step}] {model.num_gaussians} Gaussians")
     model.train()
 
 
 @torch.no_grad()
-def evaluate(model, test_dataset, device, output_dir):
+def evaluate(model, test_dataset, device, output_dir, step):
     model.eval()
+    step_dir = build_step_dir(output_dir, step)
+    test_dir = os.path.join(step_dir, "test")
+    os.makedirs(test_dir, exist_ok=True)
+
     H, W = test_dataset._data_info["img_h"], test_dataset._data_info["img_w"]
     num_test = len(test_dataset._records_keys)
     for i in range(num_test):
@@ -238,9 +261,9 @@ def evaluate(model, test_dataset, device, output_dir):
         frame_key = data["infos"]["frame_key"]
         save_image(
             rendered.permute(2, 0, 1).clamp(0, 1),
-            os.path.join(output_dir, "test", f"{frame_key}.png"),
+            os.path.join(test_dir, f"{frame_key}.png"),
         )
-    print(f"Test renders saved to {output_dir}/test/")
+    print(f"Test renders saved to {test_dir}/")
     model.train()
 
 
@@ -253,5 +276,3 @@ if __name__ == "__main__":
     print("Command Line Args: {}".format(args))
 
     train(args.config_path)
-
-
