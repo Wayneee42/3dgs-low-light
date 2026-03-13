@@ -1,15 +1,17 @@
 python train.py -c config/stage2/bluehawaii.yaml
-python eval.py -w outputs/stage2/BlueHawaii/step_15000.pt
-python eval.py -w outputs/stage2/BlueHawaii/step_30000.pt
+python eval.py -w outputs/stage2/BlueHawaii/step_15000/step_15000.pt
+python eval.py -w outputs/stage2/BlueHawaii/step_30000/step_30000.pt
 
+python tools/extract_marigold_depth.py dataset/Validation/lowlight_validation/validation/BlueHawaii --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+python tools/extract_structure_prior.py dataset/Validation/lowlight_validation/validation/BlueHawaii --device cuda --skip-existing
 python train.py -c config/stage4/bluehawaii.yaml
-python eval.py -w outputs/stage4/BlueHawaii/step_15000.pt
-python eval.py -w outputs/stage4/BlueHawaii/step_30000.pt
+python eval.py -w outputs/stage4/BlueHawaii/step_15000/step_15000.pt
+python eval.py -w outputs/stage4/BlueHawaii/step_30000/step_30000.pt
 
 python train.py -c config/stage5a/bluehawaii.yaml
-python eval.py -w outputs/stage5a/BlueHawaii/step_15000.pt
-python eval.py -w outputs/stage5a/BlueHawaii/step_30000.pt
+python eval.py -w outputs/stage5a/BlueHawaii/step_15000/step_15000.pt
+python eval.py -w outputs/stage5a/BlueHawaii/step_30000/step_30000.pt
 
 python train.py -c config/stage5b/bluehawaii.yaml
-python eval.py -w outputs/stage5b/BlueHawaii/step_15000.pt
-python eval.py -w outputs/stage5b/BlueHawaii/step_30000.pt
+python eval.py -w outputs/stage5b/BlueHawaii/step_15000/step_15000.pt
+python eval.py -w outputs/stage5b/BlueHawaii/step_30000/step_30000.pt
