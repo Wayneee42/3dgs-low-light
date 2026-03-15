@@ -1,4 +1,4 @@
-﻿# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
+# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import os
 from pathlib import Path
@@ -47,6 +47,7 @@ class Simple3DGS(nn.Module):
         shN = torch.zeros(num_points, num_sh_bases - 1, 3)
         depth_feat = torch.zeros(num_points, 1)
         prior_feat = torch.zeros(num_points, 1)
+        illum_feat = torch.zeros(num_points, 3)
 
         self.splats = nn.ParameterDict(
             {
@@ -58,6 +59,7 @@ class Simple3DGS(nn.Module):
                 "shN": nn.Parameter(shN),
                 "depth_feat": nn.Parameter(depth_feat),
                 "prior_feat": nn.Parameter(prior_feat),
+                "illum_feat": nn.Parameter(illum_feat),
             }
         )
 
@@ -495,13 +497,18 @@ class Simple3DGS(nn.Module):
         viewmats, intrinsics = self._build_camera(camtoworld)
         backgrounds = torch.zeros((1, 3), dtype=torch.float32, device=device)
         outputs = {}
+        head_specs = {
+            "depth": ("depth_feat", "scalar"),
+            "prior": ("prior_feat", "scalar"),
+            "illum": ("illum_feat", "rgb"),
+        }
         for head in heads:
-            feature_name = f"{head}_feat"
+            feature_name, head_type = head_specs.get(head, (f"{head}_feat", "scalar"))
             if feature_name not in self.splats:
                 outputs[head] = None
                 continue
-            scalar_feature = self.splats[feature_name]
-            colors = scalar_feature.repeat(1, 3)
+            feature = self.splats[feature_name]
+            colors = feature if head_type == "rgb" else feature.repeat(1, 3)
             renders, _, _ = self._rasterize(
                 colors=colors,
                 viewmats=viewmats,
@@ -511,16 +518,24 @@ class Simple3DGS(nn.Module):
                 backgrounds=backgrounds,
                 sh_degree=None,
             )
-            outputs[head] = renders[0].mean(dim=-1, keepdim=True)
+            outputs[head] = renders[0] if head_type == "rgb" else renders[0].mean(dim=-1, keepdim=True)
         return outputs
 
     def forward(self, camtoworld, img_h, img_w, render_heads=()):
         rgb, alphas, info = self.render_rgb(camtoworld, img_h, img_w)
         head_outputs = self.render_aux_heads(camtoworld, img_h, img_w, render_heads) if render_heads else {}
+        illum_aux = head_outputs.get("illum")
+        if illum_aux is not None:
+            illum_factor = 2.0 * torch.sigmoid(illum_aux)
+            recon_rgb = torch.clamp(rgb * illum_factor, 0.0, 1.0)
+        else:
+            recon_rgb = rgb
         return {
             "rgb": rgb,
             "depth_aux": head_outputs.get("depth"),
             "prior_aux": head_outputs.get("prior"),
+            "illum_aux": illum_aux,
+            "recon_rgb": recon_rgb,
             "alphas": alphas,
             "info": info,
         }

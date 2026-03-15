@@ -72,16 +72,65 @@ def resolve_config_path(ckpt_dir):
     raise FileNotFoundError(f"No config.yaml found in '{ckpt_dir}' or its parent directory.")
 
 
+
+def _cfg_get(cfg, key, default):
+    if cfg is None:
+        return default
+    try:
+        return getattr(cfg, key)
+    except AttributeError:
+        return default
+
+
+
+def build_eval_heads(meta_cfg):
+    loss_cfg = _cfg_get(meta_cfg, "LOSS", None)
+    heads = []
+    priors_cfg = _cfg_get(meta_cfg, "PRIORS", None)
+    depth_cfg = _cfg_get(priors_cfg, "DEPTH", None)
+    structure_cfg = _cfg_get(priors_cfg, "STRUCTURE", None)
+    if bool(_cfg_get(depth_cfg, "ENABLED", False)):
+        heads.append("depth")
+    if bool(_cfg_get(structure_cfg, "ENABLED", False)):
+        heads.append("prior")
+    if float(_cfg_get(loss_cfg, "LAMBDA_RECONSTRUCTION", 0.0)) > 0.0:
+        heads.append("illum")
+    return tuple(heads)
+
+
+
+def save_render_outputs(render_outputs, frame_key, output_dir):
+    final_image = render_outputs["recon_rgb"]
+    save_image(final_image.permute(2, 0, 1).clamp(0, 1), os.path.join(output_dir, f"{frame_key}.png"))
+
+    illum_aux = render_outputs.get("illum_aux")
+    if illum_aux is None:
+        return final_image
+
+    base_dir = os.path.join(output_dir, "base")
+    illum_dir = os.path.join(output_dir, "illum")
+    recon_dir = os.path.join(output_dir, "recon")
+    os.makedirs(base_dir, exist_ok=True)
+    os.makedirs(illum_dir, exist_ok=True)
+    os.makedirs(recon_dir, exist_ok=True)
+
+    save_image(render_outputs["rgb"].permute(2, 0, 1).clamp(0, 1), os.path.join(base_dir, f"{frame_key}.png"))
+    save_image((torch.clamp(2.0 * torch.sigmoid(illum_aux), 0.0, 2.0) / 2.0).permute(2, 0, 1), os.path.join(illum_dir, f"{frame_key}.png"))
+    save_image(final_image.permute(2, 0, 1).clamp(0, 1), os.path.join(recon_dir, f"{frame_key}.png"))
+    return final_image
+
+
 @torch.no_grad()
 def evaluate(checkpoint_path, device="cuda"):
     ckpt_dir = os.path.dirname(checkpoint_path)
     config_path = resolve_config_path(ckpt_dir)
-    with open(config_path) as f:
-        config_dict = yaml.load(f, Loader=yaml.Loader)
+    with open(config_path) as handle:
+        config_dict = yaml.load(handle, Loader=yaml.Loader)
     config_dict["EXP_STR"] = ""
     config_dict["TIME_STR"] = ""
     meta_cfg = ConfigDict(config_path=config_dict)
     cfg = meta_cfg.MODEL
+    render_heads = build_eval_heads(meta_cfg)
 
     test_dataset = Blender(meta_cfg.DATASET, split="test", load_images=False)
     metric_dataset = Blender(meta_cfg.DATASET, split="test", load_images=True) if can_compute_metrics(test_dataset) else None
@@ -89,8 +138,8 @@ def evaluate(checkpoint_path, device="cuda"):
 
     model = Simple3DGS(cfg, test_dataset._data_info).to(device)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    for k, v in ckpt.items():
-        model.splats[k] = torch.nn.Parameter(v)
+    for key, value in ckpt.items():
+        model.splats[key] = torch.nn.Parameter(value)
     model.sh_degree = model.sh_degree_max
     model.eval()
 
@@ -105,19 +154,15 @@ def evaluate(checkpoint_path, device="cuda"):
         metric_values["LPIPS"] = []
         per_view["LPIPS"] = {}
 
-    for i in tqdm(range(num_test), desc="Rendering"):
-        data = test_dataset[i]
+    for index in tqdm(range(num_test), desc="Rendering"):
+        data = test_dataset[index]
         camtoworld = data["transforms"].to(device)
-        render_outputs = model(camtoworld, H, W, render_heads=())
-        rendered = render_outputs["rgb"]
+        render_outputs = model(camtoworld, H, W, render_heads=render_heads)
         frame_key = data["infos"]["frame_key"]
-        save_image(
-            rendered.permute(2, 0, 1).clamp(0, 1),
-            os.path.join(output_dir, f"{frame_key}.png"),
-        )
+        rendered = save_render_outputs(render_outputs, frame_key, output_dir)
 
         if metric_dataset is not None:
-            gt_data = metric_dataset[i]
+            gt_data = metric_dataset[index]
             gt_hwc = gt_data["images"].to(device).permute(1, 2, 0)
             psnr_value = psnr(rendered, gt_hwc)
             ssim_value = float(ssim(rendered, gt_hwc).item())

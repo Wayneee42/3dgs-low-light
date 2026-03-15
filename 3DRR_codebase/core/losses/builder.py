@@ -4,6 +4,7 @@ from .modules import (
     DepthPriorLoss,
     ExposureControlLoss,
     LowLightConsistencyLoss,
+    ReconstructionLoss,
     RGBReconstructionLoss,
     StructurePriorLoss,
 )
@@ -26,8 +27,23 @@ def build_loss_modules(meta_cfg, model_cfg):
     depth_cfg = _cfg_get(priors_cfg, "DEPTH", None)
     structure_cfg = _cfg_get(priors_cfg, "STRUCTURE", None)
 
+    lambda_ssim = float(_cfg_get(loss_cfg, "LAMBDA_SSIM", model_cfg.LAMBDA_SSIM))
+    lambda_reconstruction = float(_cfg_get(loss_cfg, "LAMBDA_RECONSTRUCTION", 0.0))
+    has_reconstruction = lambda_reconstruction > 0.0
+
     modules = [
-        RGBReconstructionLoss(lambda_ssim=float(_cfg_get(loss_cfg, "LAMBDA_SSIM", model_cfg.LAMBDA_SSIM))),
+        RGBReconstructionLoss(
+            lambda_ssim=lambda_ssim,
+            name="rgb_base" if has_reconstruction else "rgb",
+            input_key="rgb_base_hwc" if has_reconstruction else "rendered",
+            target_key="supervision_hwc",
+        ),
+        ReconstructionLoss(
+            lambda_ssim=lambda_ssim,
+            weight=lambda_reconstruction,
+            input_key="recon_hwc",
+            target_key="proxy_target_hwc",
+        ),
         LowLightConsistencyLoss(weight=float(_cfg_get(loss_cfg, "LAMBDA_LOW_LIGHT", 0.0))),
         ExposureControlLoss(weight=float(_cfg_get(loss_cfg, "LAMBDA_EXPOSURE", 0.0))),
     ]
@@ -78,6 +94,8 @@ def required_aux_heads(loss_modules):
         heads.append("depth")
     if any(module.name == "structure_prior" for module in loss_modules):
         heads.append("prior")
+    if any(module.name == "reconstruction" for module in loss_modules):
+        heads.append("illum")
     return tuple(heads)
 
 
