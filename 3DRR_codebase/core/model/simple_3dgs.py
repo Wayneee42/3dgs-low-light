@@ -47,7 +47,7 @@ class Simple3DGS(nn.Module):
         shN = torch.zeros(num_points, num_sh_bases - 1, 3)
         depth_feat = torch.zeros(num_points, 1)
         prior_feat = torch.zeros(num_points, 1)
-        illum_feat = torch.zeros(num_points, 3)
+        illum_feat = torch.zeros(num_points, 1)
 
         self.splats = nn.ParameterDict(
             {
@@ -500,7 +500,7 @@ class Simple3DGS(nn.Module):
         head_specs = {
             "depth": ("depth_feat", "scalar"),
             "prior": ("prior_feat", "scalar"),
-            "illum": ("illum_feat", "rgb"),
+            "illum": ("illum_feat", "scalar"),
         }
         for head in heads:
             feature_name, head_type = head_specs.get(head, (f"{head}_feat", "scalar"))
@@ -508,7 +508,7 @@ class Simple3DGS(nn.Module):
                 outputs[head] = None
                 continue
             feature = self.splats[feature_name]
-            colors = feature if head_type == "rgb" else feature.repeat(1, 3)
+            colors = feature.repeat(1, 3)
             renders, _, _ = self._rasterize(
                 colors=colors,
                 viewmats=viewmats,
@@ -518,7 +518,7 @@ class Simple3DGS(nn.Module):
                 backgrounds=backgrounds,
                 sh_degree=None,
             )
-            outputs[head] = renders[0] if head_type == "rgb" else renders[0].mean(dim=-1, keepdim=True)
+            outputs[head] = renders[0].mean(dim=-1, keepdim=True)
         return outputs
 
     def forward(self, camtoworld, img_h, img_w, render_heads=()):
@@ -539,4 +539,3 @@ class Simple3DGS(nn.Module):
             "alphas": alphas,
             "info": info,
         }
-

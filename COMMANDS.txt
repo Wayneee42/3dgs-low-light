@@ -1,11 +1,11 @@
 python tools/extract_marigold_depth.py dataset/Validation/lowlight_validation/validation/BlueHawaii --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Validation/lowlight_validation/validation/BlueHawaii --device cuda --skip-existing
 
-python train.py -c config/stage6_proxy_v2/bluehawaii.yaml
-python eval.py -w outputs/stage6_proxy_v2/BlueHawaii/step_15000/step_15000.pt
-python eval.py -w outputs/stage6_proxy_v2/BlueHawaii/step_20000/step_20000.pt
-python eval.py -w outputs/stage6_proxy_v2/BlueHawaii/step_25000/step_25000.pt
-python eval.py -w outputs/stage6_proxy_v2/BlueHawaii/step_30000/step_30000.pt
+python train.py -c config/stage6_scalar/bluehawaii.yaml
+python eval.py -w outputs/stage6_scalar/BlueHawaii/step_15000/step_15000.pt
+python eval.py -w outputs/stage6_scalar/BlueHawaii/step_20000/step_20000.pt
+python eval.py -w outputs/stage6_scalar/BlueHawaii/step_25000/step_25000.pt
+python eval.py -w outputs/stage6_scalar/BlueHawaii/step_30000/step_30000.pt
 
 
 Development场景：
@@ -13,33 +13,41 @@ Development场景：
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Chocolate --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Chocolate --device cuda --skip-existing
 
-python train.py -c config/stage5b/chocolate_hybrid_anchor.yaml
-python eval.py -w outputs/stage5b/Chocolate/step_15000/step_15000.pt
-python eval.py -w outputs/stage5b/Chocolate/step_30000/step_30000.pt
+python train.py -c config/stage6_scalar/chocolate.yaml
+python eval.py -w outputs/stage6_scalar/Chocolate/step_15000/step_15000.pt
+python eval.py -w outputs/stage6_scalar/Chocolate/step_20000/step_20000.pt
+python eval.py -w outputs/stage6_scalar/Chocolate/step_25000/step_25000.pt
+python eval.py -w outputs/stage6_scalar/Chocolate/step_30000/step_30000.pt
 
 
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Cupcake --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Cupcake --device cuda --skip-existing
 
-python train.py -c config/stage5b/cupcake_hybrid_anchor.yaml
-python eval.py -w outputs/stage5b/Cupcake/step_15000/step_15000.pt
-python eval.py -w outputs/stage5b/Cupcake/step_30000/step_30000.pt
+python train.py -c config/stage6_scalar/cupcake.yaml
+python eval.py -w outputs/stage6_scalar/Cupcake/step_15000/step_15000.pt
+python eval.py -w outputs/stage6_scalar/Cupcake/step_20000/step_20000.pt
+python eval.py -w outputs/stage6_scalar/Cupcake/step_25000/step_25000.pt
+python eval.py -w outputs/stage6_scalar/Cupcake/step_30000/step_30000.pt
 
 
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/GearWorks --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/GearWorks --device cuda --skip-existing
 
-python train.py -c config/stage5b/gearworks_hybrid_anchor.yaml
-python eval.py -w outputs/stage5b/GearWorks/step_15000/step_15000.pt
-python eval.py -w outputs/stage5b/GearWorks/step_30000/step_30000.pt
+python train.py -c config/stage6_scalar/gearworks.yaml
+python eval.py -w outputs/stage6_scalar/GearWorks/step_15000/step_15000.pt
+python eval.py -w outputs/stage6_scalar/GearWorks/step_20000/step_20000.pt
+python eval.py -w outputs/stage6_scalar/GearWorks/step_25000/step_25000.pt
+python eval.py -w outputs/stage6_scalar/GearWorks/step_30000/step_30000.pt
 
 
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Laboratory --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Laboratory --device cuda --skip-existing
 
-python train.py -c config/stage5b/laboratory_hybrid_anchor.yaml
-python eval.py -w outputs/stage5b/Laboratory/step_15000/step_15000.pt
-python eval.py -w outputs/stage5b/Laboratory/step_30000/step_30000.pt
+python train.py -c config/stage6_scalar/laboratory.yaml
+python eval.py -w outputs/stage6_scalar/Laboratory/step_15000/step_15000.pt
+python eval.py -w outputs/stage6_scalar/Laboratory/step_20000/step_20000.pt
+python eval.py -w outputs/stage6_scalar/Laboratory/step_25000/step_25000.pt
+python eval.py -w outputs/stage6_scalar/Laboratory/step_30000/step_30000.pt

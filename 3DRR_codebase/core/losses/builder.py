@@ -3,6 +3,7 @@ import torch
 from .modules import (
     DepthPriorLoss,
     ExposureControlLoss,
+    IlluminationRegularizationLoss,
     LowLightConsistencyLoss,
     ReconstructionLoss,
     RGBReconstructionLoss,
@@ -44,6 +45,7 @@ def build_loss_modules(meta_cfg, model_cfg):
             input_key="recon_hwc",
             target_key="proxy_target_hwc",
         ),
+        IlluminationRegularizationLoss(weight=float(_cfg_get(loss_cfg, "LAMBDA_ILLUM_REG", 0.0))),
         LowLightConsistencyLoss(weight=float(_cfg_get(loss_cfg, "LAMBDA_LOW_LIGHT", 0.0))),
         ExposureControlLoss(weight=float(_cfg_get(loss_cfg, "LAMBDA_EXPOSURE", 0.0))),
     ]
@@ -94,7 +96,7 @@ def required_aux_heads(loss_modules):
         heads.append("depth")
     if any(module.name == "structure_prior" for module in loss_modules):
         heads.append("prior")
-    if any(module.name == "reconstruction" for module in loss_modules):
+    if any(module.name in {"reconstruction", "illum_reg"} for module in loss_modules):
         heads.append("illum")
     return tuple(heads)
 

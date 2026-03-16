@@ -265,15 +265,17 @@ def train(config_path, device="cuda"):
                     psnr_recon = psnr_base
             postfix = {
                 "loss": f"{loss_logs['total']:.4f}",
-                # "rgb": f"{loss_logs.get('rgb', 0.0):.4f}",
+                "rgb": f"{loss_logs.get('rgb', 0.0):.4f}",
                 "rgb_b": f"{loss_logs.get('rgb_base', 0.0):.4f}",
                 "rec": f"{loss_logs.get('reconstruction', 0.0):.4f}",
-                # "exp": f"{loss_logs.get('exposure', 0.0):.4f}",
+                "illum_r": f"{loss_logs.get('illum_reg', 0.0):.4f}",
+                "illum_f": f"{loss_logs.get('illum_reg_factor_mean', 1.0):.3f}",
+                "exp": f"{loss_logs.get('exposure', 0.0):.4f}",
                 "dep": f"{loss_logs.get('depth_prior', 0.0):.4f}",
                 "st": f"{loss_logs.get('structure_prior', 0.0):.4f}",
                 "illum_a": f"{loss_logs.get('illumination_available', 0.0):.0f}",
                 "proxy_m": f"{loss_logs.get('proxy_mean', 0.0):.3f}",
-                # "proxy_g": f"{loss_logs.get('proxy_gain', 0.0):.2f}",
+                "proxy_g": f"{loss_logs.get('proxy_gain', 0.0):.2f}",
                 "low_m": f"{loss_logs.get('low_mean', 0.0):.3f}",
                 "n_gs": model.num_gaussians,
                 "psnr_b": f"{psnr_base:.2f}",
@@ -370,3 +372,4 @@ if __name__ == "__main__":
     print("Command Line Args: {}".format(args))
 
     train(args.config_path)
+

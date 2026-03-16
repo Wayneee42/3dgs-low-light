@@ -57,6 +57,19 @@ class ReconstructionLoss(BaseLossModule):
         }
 
 
+class IlluminationRegularizationLoss(BaseLossModule):
+    def __init__(self, weight):
+        super().__init__(name="illum_reg", weight=weight, enabled=weight > 0.0, start_step=0)
+
+    def compute(self, context):
+        illum_aux = context.get("illum_aux")
+        if illum_aux is None:
+            raise RuntimeError("IlluminationRegularizationLoss requires illum_aux, but the model did not render the illumination head.")
+        illum_factor = 2.0 * torch.sigmoid(illum_aux)
+        loss = torch.abs(illum_factor - 1.0).mean()
+        return loss, {"factor_mean": float(illum_factor.detach().mean().item())}
+
+
 class LowLightConsistencyLoss(BaseLossModule):
     def __init__(self, weight):
         super().__init__(name="low_light", weight=weight, enabled=weight > 0.0, start_step=0)

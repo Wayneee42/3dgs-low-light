@@ -1,6 +1,6 @@
 DATASET:
-  NAME: 'Cupcake'
-  DATA_PATH: 'dataset/Development/lowlight_development/development/Cupcake'
+  NAME: 'BlueHawaii'
+  DATA_PATH: 'dataset/Validation/lowlight_validation/validation/BlueHawaii'
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
@@ -10,7 +10,7 @@ MODEL:
   NAME: 'Simple3DGS'
   NUM_INIT_POINTS: 100000
   INIT_MODE: 'hybrid_anchor'
-  INIT_ANCHOR_RATIO: 0.10
+  INIT_ANCHOR_RATIO: 0.20
   INIT_ANCHOR_MAX_DEPTH_GRAD: 0.08
   INIT_ANCHOR_BRIGHTNESS_QUANTILE: 0.7
   INIT_DEPTH_DIR: 'auxiliaries/depth'
@@ -82,7 +82,7 @@ PRIORS:
     SCALE: 0.8
 
 EXPERIMENT:
-  STAGE: 'stage6_proxy_v2'
+  STAGE: 'stage6_scalar'
 
 PROXY_TARGET:
   ENABLED: true
@@ -90,6 +90,7 @@ PROXY_TARGET:
   EPS: 1.0e-6
   MAX_GAIN: 32.0
   MIN_GAIN: 1.0
+
 
 
 
