@@ -90,9 +90,7 @@ PROXY_TARGET:
   EPS: 1.0e-6
   MAX_GAIN: 32.0
   MIN_GAIN: 1.0
-
-
-
-
+  STAT_MODE: 'clipped_mean'
+  CLIP_PERCENTILE: 90.0
 
 

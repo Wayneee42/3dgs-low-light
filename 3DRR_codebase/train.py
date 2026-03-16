@@ -238,6 +238,7 @@ def train(config_path, device="cuda"):
         loss, loss_logs = compute_loss_modules(loss_modules, context)
         loss_logs["illumination_available"] = float(render_outputs["illum_aux"] is not None)
         loss_logs["proxy_mean"] = float(train_batch["proxy_mean"])
+        loss_logs["proxy_stat_mean"] = float(train_batch["proxy_stat_mean"])
         loss_logs["proxy_gain"] = float(train_batch["proxy_scale"])
         loss_logs["low_mean"] = float(train_batch["low_mean"])
 
@@ -275,6 +276,7 @@ def train(config_path, device="cuda"):
                 "st": f"{loss_logs.get('structure_prior', 0.0):.4f}",
                 "illum_a": f"{loss_logs.get('illumination_available', 0.0):.0f}",
                 "proxy_m": f"{loss_logs.get('proxy_mean', 0.0):.3f}",
+                "proxy_sm": f"{loss_logs.get('proxy_stat_mean', 0.0):.3f}",
                 "proxy_g": f"{loss_logs.get('proxy_gain', 0.0):.2f}",
                 "low_m": f"{loss_logs.get('low_mean', 0.0):.3f}",
                 "n_gs": model.num_gaussians,
@@ -372,4 +374,5 @@ if __name__ == "__main__":
     print("Command Line Args: {}".format(args))
 
     train(args.config_path)
+
 
