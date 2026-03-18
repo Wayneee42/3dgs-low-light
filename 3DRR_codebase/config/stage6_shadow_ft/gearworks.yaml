@@ -1,6 +1,6 @@
 DATASET:
-  NAME: 'Chocolate'
-  DATA_PATH: 'dataset/Development/lowlight_development/development/Chocolate'
+  NAME: 'GearWorks'
+  DATA_PATH: 'dataset/Development/lowlight_development/development/GearWorks'
   BACKGROUND_COLOR: 255.0
   AUXILIARY_DIR: 'auxiliaries'
 
@@ -40,7 +40,7 @@ MODEL:
   LR_SH0: 2.5e-3
   LR_SHN: 1.25e-4
   LR_ILLUM: 1.25e-4
-  WARMSTART_CHECKPOINT: 'outputs/stage5b/Chocolate/step_15000/step_15000.pt'
+  WARMSTART_CHECKPOINT: 'outputs/stage5b/GearWorks/step_15000/step_15000.pt'
   DENSIFY_START_STEP: 6000
   DENSIFY_STOP_STEP: 6000
   DENSIFY_INTERVAL: 200
@@ -95,7 +95,8 @@ PROXY_TARGET:
   STAT_MODE: 'clipped_mean'
   CLIP_PERCENTILE: 90.0
   FORM: 'shadow_blend'
-  SHADOW_THRESHOLD: 0.20
-  SHADOW_POWER: 2.0
+  SHADOW_THRESHOLD: 0.24
+  SHADOW_POWER: 1.5
   SHADOW_SOURCE: 'supervision_like'
-  SHADOW_WEIGHT_BLUR_KERNEL: 9
+  SHADOW_WEIGHT_BLUR_KERNEL: 11
+

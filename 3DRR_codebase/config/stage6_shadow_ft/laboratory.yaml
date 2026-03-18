@@ -40,7 +40,7 @@ MODEL:
   LR_SH0: 2.5e-3
   LR_SHN: 1.25e-4
   LR_ILLUM: 1.25e-4
-  WARMSTART_CHECKPOINT: 'outputs/stage5b/Laboratory_anchor_0.1_0.08_0.7_and_densify_5000_200/step_15000/step_15000.pt'
+  WARMSTART_CHECKPOINT: 'outputs/stage5b/Laboratory/step_15000/step_15000.pt'
   DENSIFY_START_STEP: 6000
   DENSIFY_STOP_STEP: 6000
   DENSIFY_INTERVAL: 200
