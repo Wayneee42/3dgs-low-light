@@ -100,6 +100,60 @@ def save_checkpoint(model, output_dir, step, meta_cfg):
 
 
 
+
+def load_warmstart_checkpoint(model, checkpoint_path, device):
+    checkpoint_path = os.path.expanduser(str(checkpoint_path))
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if not isinstance(checkpoint, dict) or "means" not in checkpoint:
+        raise RuntimeError(f"Warm-start checkpoint must be a splat state_dict with 'means': {checkpoint_path}")
+
+    expected_keys = list(model.splats.keys())
+    means = checkpoint["means"]
+    if not torch.is_tensor(means) or means.ndim != 2 or means.shape[1] != 3:
+        raise RuntimeError(f"Warm-start checkpoint has invalid means tensor: {checkpoint_path}")
+
+    num_points = int(means.shape[0])
+    normalized = {}
+    missing_keys = []
+    converted_illum = False
+    for key in expected_keys:
+        tensor = checkpoint.get(key)
+        if tensor is None:
+            if key in {"depth_feat", "prior_feat", "illum_feat"}:
+                tensor = torch.zeros(num_points, 1, dtype=means.dtype)
+                missing_keys.append(key)
+            else:
+                raise RuntimeError(f"Warm-start checkpoint is missing required key '{key}': {checkpoint_path}")
+        if not torch.is_tensor(tensor):
+            raise RuntimeError(f"Warm-start checkpoint key '{key}' is not a tensor: {checkpoint_path}")
+
+        tensor = tensor.detach().to(device)
+        if tensor.shape[0] != num_points:
+            raise RuntimeError(
+                f"Warm-start checkpoint key '{key}' has inconsistent gaussian count {tensor.shape[0]} != {num_points}: {checkpoint_path}"
+            )
+
+        if key in {"depth_feat", "prior_feat", "illum_feat"}:
+            if tensor.ndim == 1:
+                tensor = tensor.unsqueeze(-1)
+            if key == "illum_feat" and tensor.ndim == 2 and tensor.shape[1] != 1:
+                tensor = tensor.mean(dim=1, keepdim=True)
+                converted_illum = True
+            elif tensor.ndim != 2 or tensor.shape[1] != 1:
+                tensor = tensor[:, :1]
+
+        normalized[key] = torch.nn.Parameter(tensor.contiguous())
+
+    model.splats = torch.nn.ParameterDict(normalized)
+    model.sh_degree = model.sh_degree_max
+    missing_str = ",".join(missing_keys) if missing_keys else "none"
+    print(
+        f"[WarmStart] checkpoint={checkpoint_path}, gaussians={num_points}, missing={missing_str}, "
+        f"illum_converted={int(converted_illum)}, sh_degree={model.sh_degree}"
+    )
+
+
+
 def save_render_outputs(render_outputs, frame_key, root_dir):
     final_image = render_outputs["recon_rgb"]
     save_image(final_image.permute(2, 0, 1).clamp(0, 1), os.path.join(root_dir, f"{frame_key}.png"))
@@ -162,6 +216,9 @@ def train(config_path, device="cuda"):
     }
 
     model = Simple3DGS(cfg, train_dataset._data_info, init_context=init_context).to(device)
+    warmstart_checkpoint = _cfg_get(cfg, "WARMSTART_CHECKPOINT", None)
+    if warmstart_checkpoint:
+        load_warmstart_checkpoint(model, warmstart_checkpoint, device)
     print(f"Initialized {model.num_gaussians} Gaussians")
 
     lr_map = {
@@ -199,6 +256,9 @@ def train(config_path, device="cuda"):
 
     train_aug_images = []
     train_proxy_images = []
+    train_proxy_global_images = []
+    train_proxy_shadow_images = []
+    train_proxy_weight_images = []
     pbar = tqdm(range(total_steps))
     for step in pbar:
         current_step = step + 1
@@ -227,6 +287,7 @@ def train(config_path, device="cuda"):
             "prior_aux": render_outputs["prior_aux"],
             "illum_aux": render_outputs["illum_aux"],
             "supervision_hwc": supervision_image.permute(1, 2, 0),
+            "proxy_shadow_weight_hwc": train_batch["proxy_shadow_weight"],
             "reference_hwc": reference_image.permute(1, 2, 0),
             "proxy_target_hwc": proxy_target_image.permute(1, 2, 0),
             "target_mean": train_batch["target_mean"],
@@ -240,6 +301,11 @@ def train(config_path, device="cuda"):
         loss_logs["proxy_mean"] = float(train_batch["proxy_mean"])
         loss_logs["proxy_stat_mean"] = float(train_batch["proxy_stat_mean"])
         loss_logs["proxy_gain"] = float(train_batch["proxy_scale"])
+        loss_logs["proxy_form"] = str(train_batch["proxy_form"])
+        loss_logs["proxy_global_mean"] = float(train_batch["proxy_global_mean"])
+        loss_logs["proxy_shadow_mean"] = float(train_batch["proxy_shadow_mean"])
+        loss_logs["proxy_blend_mean"] = float(train_batch["proxy_blend_mean"])
+        loss_logs["proxy_shadow_weight_mean"] = float(train_batch["proxy_shadow_weight_mean"])
         loss_logs["low_mean"] = float(train_batch["low_mean"])
 
         strategy.step_pre_backward(model.splats, optimizers, strategy_state, step, render_outputs["info"])
@@ -269,38 +335,51 @@ def train(config_path, device="cuda"):
                 "rgb": f"{loss_logs.get('rgb', 0.0):.4f}",
                 "rgb_b": f"{loss_logs.get('rgb_base', 0.0):.4f}",
                 "rec": f"{loss_logs.get('reconstruction', 0.0):.4f}",
-                "illum_r": f"{loss_logs.get('illum_reg', 0.0):.4f}",
-                "illum_f": f"{loss_logs.get('illum_reg_factor_mean', 1.0):.3f}",
-                "exp": f"{loss_logs.get('exposure', 0.0):.4f}",
+                "rec_a": f"{loss_logs.get('reconstruction_active', 0.0):.0f}",
                 "dep": f"{loss_logs.get('depth_prior', 0.0):.4f}",
                 "st": f"{loss_logs.get('structure_prior', 0.0):.4f}",
-                "illum_a": f"{loss_logs.get('illumination_available', 0.0):.0f}",
-                "proxy_m": f"{loss_logs.get('proxy_mean', 0.0):.3f}",
-                "proxy_sm": f"{loss_logs.get('proxy_stat_mean', 0.0):.3f}",
                 "proxy_g": f"{loss_logs.get('proxy_gain', 0.0):.2f}",
-                "low_m": f"{loss_logs.get('low_mean', 0.0):.3f}",
+                "proxy_sw": f"{loss_logs.get('proxy_shadow_weight_mean', 0.0):.3f}",
                 "n_gs": model.num_gaussians,
                 "psnr_b": f"{psnr_base:.2f}",
             }
             if has_reconstruction:
                 postfix["psnr_r"] = f"{psnr_recon:.2f}"
+                postfix.pop("rgb", None)
             else:
+                postfix.pop("rgb_b", None)
+                postfix.pop("rec", None)
+                postfix.pop("rec_a", None)
+                postfix.pop("proxy_sw", None)
                 postfix["psnr"] = f"{psnr_base:.2f}"
             pbar.set_postfix(**postfix)
 
         if train_aug_images is not None:
             train_aug_images.append(supervision_image.clamp(0, 1))
             train_proxy_images.append(proxy_target_image.clamp(0, 1))
+            train_proxy_global_images.append(train_batch["proxy_global"].clamp(0, 1))
+            train_proxy_shadow_images.append(train_batch["proxy_shadow"].clamp(0, 1))
+            proxy_weight_image = train_batch["proxy_shadow_weight"].unsqueeze(0).repeat(3, 1, 1).clamp(0, 1)
+            train_proxy_weight_images.append(proxy_weight_image)
             if len(train_aug_images) >= 4:
                 step_dir = build_step_dir(output_dir, current_step)
                 examples_dir = os.path.join(step_dir, "examples")
                 os.makedirs(examples_dir, exist_ok=True)
                 aug_grid = make_grid(train_aug_images[:4], nrow=2)
                 proxy_grid = make_grid(train_proxy_images[:4], nrow=2)
+                proxy_global_grid = make_grid(train_proxy_global_images[:4], nrow=2)
+                proxy_shadow_grid = make_grid(train_proxy_shadow_images[:4], nrow=2)
+                proxy_weight_grid = make_grid(train_proxy_weight_images[:4], nrow=2)
                 save_image(aug_grid, os.path.join(examples_dir, "train_aug.jpg"))
                 save_image(proxy_grid, os.path.join(examples_dir, "proxy_target.jpg"))
+                save_image(proxy_global_grid, os.path.join(examples_dir, "proxy_global.jpg"))
+                save_image(proxy_shadow_grid, os.path.join(examples_dir, "proxy_shadow.jpg"))
+                save_image(proxy_weight_grid, os.path.join(examples_dir, "proxy_shadow_weight.jpg"))
                 train_aug_images = None
                 train_proxy_images = None
+                train_proxy_global_images = None
+                train_proxy_shadow_images = None
+                train_proxy_weight_images = None
 
         if current_step % cfg.VAL_INTERVAL_STEP == 0:
             validate(model, val_dataset, current_step, device, output_dir, aux_heads)
@@ -374,5 +453,8 @@ if __name__ == "__main__":
     print("Command Line Args: {}".format(args))
 
     train(args.config_path)
+
+
+
 
 

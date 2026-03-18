@@ -1,6 +1,7 @@
 import random
 
 import torch
+import torch.nn.functional as F
 
 
 
@@ -27,13 +28,16 @@ def exposure_match(image, target_mean, min_scale=1.0, max_scale=3.0, eps=1e-6):
 
 
 
-def _compute_proxy_stat_mean(image, proxy_cfg, eps):
-    stat_mode = str(_cfg_get(proxy_cfg, "STAT_MODE", "mean")).lower()
+def _compute_gray(image):
     if image.dim() != 3 or image.shape[0] != 3:
         raise RuntimeError(f"Proxy target expects CHW RGB image, got shape {tuple(image.shape)}")
-
     image = torch.clamp(image, 0.0, 1.0)
-    gray = 0.299 * image[0] + 0.587 * image[1] + 0.114 * image[2]
+    return 0.299 * image[0] + 0.587 * image[1] + 0.114 * image[2]
+
+
+
+def _compute_proxy_stat_mean(gray, proxy_cfg, eps):
+    stat_mode = str(_cfg_get(proxy_cfg, "STAT_MODE", "mean")).lower()
 
     if stat_mode == "mean":
         effective_mean = gray.mean().clamp_min(eps)
@@ -50,7 +54,44 @@ def _compute_proxy_stat_mean(image, proxy_cfg, eps):
 
 
 
-def build_proxy_target(image, proxy_cfg=None, fallback_target_mean=0.35, fallback_min_scale=1.0, fallback_max_scale=3.0):
+def _build_shadow_proxy(image, gamma, target_mean, min_scale, max_scale, proxy_cfg):
+    shadow_source = str(_cfg_get(proxy_cfg, "SHADOW_SOURCE", "supervision_like")).lower()
+    if shadow_source != "supervision_like":
+        raise RuntimeError(f"Unsupported PROXY_TARGET.SHADOW_SOURCE: {shadow_source}")
+    shadow_proxy = gamma_augment(image, gamma)
+    shadow_proxy, _ = exposure_match(shadow_proxy, target_mean, min_scale=min_scale, max_scale=max_scale)
+    return shadow_proxy
+
+
+
+def _smooth_shadow_weight(shadow_weight, proxy_cfg):
+    kernel_size = int(_cfg_get(proxy_cfg, "SHADOW_WEIGHT_BLUR_KERNEL", 1))
+    if kernel_size <= 1:
+        return shadow_weight
+    if kernel_size % 2 == 0:
+        raise RuntimeError("PROXY_TARGET.SHADOW_WEIGHT_BLUR_KERNEL must be an odd integer.")
+    padding = kernel_size // 2
+    smoothed = F.avg_pool2d(
+        shadow_weight.unsqueeze(0).unsqueeze(0),
+        kernel_size=kernel_size,
+        stride=1,
+        padding=padding,
+    )
+    return smoothed.squeeze(0).squeeze(0)
+
+
+
+def build_proxy_target(
+    image,
+    proxy_cfg=None,
+    fallback_target_mean=0.35,
+    fallback_min_scale=1.0,
+    fallback_max_scale=3.0,
+    gamma=1.0,
+):
+    image = torch.clamp(image, 0.0, 1.0)
+    gray = _compute_gray(image)
+
     if not bool(_cfg_get(proxy_cfg, "ENABLED", False)):
         proxy_target, proxy_gain = exposure_match(
             image,
@@ -59,18 +100,88 @@ def build_proxy_target(image, proxy_cfg=None, fallback_target_mean=0.35, fallbac
             max_scale=fallback_max_scale,
             eps=float(_cfg_get(proxy_cfg, "EPS", 1e-6)),
         )
-        return proxy_target, float(proxy_gain), float(proxy_target.mean().item()), "fallback_exposure_match"
+        zero_weight = torch.zeros_like(gray)
+        proxy_mean = float(proxy_target.mean().item())
+        return {
+            "proxy_target": proxy_target,
+            "proxy_global": proxy_target,
+            "proxy_shadow": proxy_target,
+            "proxy_shadow_weight": zero_weight,
+            "proxy_gain": float(proxy_gain),
+            "proxy_stat_mean": proxy_mean,
+            "proxy_stat_mode": "fallback_exposure_match",
+            "proxy_form": "fallback_exposure_match",
+            "proxy_global_mean": proxy_mean,
+            "proxy_shadow_mean": proxy_mean,
+            "proxy_blend_mean": proxy_mean,
+            "proxy_shadow_weight_mean": 0.0,
+        }
 
     eps = float(_cfg_get(proxy_cfg, "EPS", 1e-6))
     target_mean = float(_cfg_get(proxy_cfg, "TARGET_MEAN", fallback_target_mean))
     min_gain = float(_cfg_get(proxy_cfg, "MIN_GAIN", 1.0))
     max_gain = float(_cfg_get(proxy_cfg, "MAX_GAIN", 32.0))
 
-    image = torch.clamp(image, 0.0, 1.0)
-    stat_mean, stat_label = _compute_proxy_stat_mean(image, proxy_cfg, eps)
-    gain = torch.clamp(torch.tensor(target_mean, device=image.device) / stat_mean, min_gain, max_gain)
-    proxy_target = torch.clamp(image * gain, 0.0, 1.0)
-    return proxy_target, float(gain.item()), float(stat_mean.item()), stat_label
+    stat_mean, stat_label = _compute_proxy_stat_mean(gray, proxy_cfg, eps)
+    global_gain = torch.clamp(torch.tensor(target_mean, device=image.device) / stat_mean, min_gain, max_gain)
+    proxy_global = torch.clamp(image * global_gain, 0.0, 1.0)
+
+    form = str(_cfg_get(proxy_cfg, "FORM", "global_linear")).lower()
+    if form == "global_linear":
+        zero_weight = torch.zeros_like(gray)
+        proxy_mean = float(proxy_global.mean().item())
+        return {
+            "proxy_target": proxy_global,
+            "proxy_global": proxy_global,
+            "proxy_shadow": proxy_global,
+            "proxy_shadow_weight": zero_weight,
+            "proxy_gain": float(global_gain.item()),
+            "proxy_stat_mean": float(stat_mean.item()),
+            "proxy_stat_mode": stat_label,
+            "proxy_form": form,
+            "proxy_global_mean": proxy_mean,
+            "proxy_shadow_mean": proxy_mean,
+            "proxy_blend_mean": proxy_mean,
+            "proxy_shadow_weight_mean": 0.0,
+        }
+
+    if form == "shadow_blend":
+        shadow_proxy = _build_shadow_proxy(
+            image,
+            gamma=gamma,
+            target_mean=target_mean,
+            min_scale=fallback_min_scale,
+            max_scale=fallback_max_scale,
+            proxy_cfg=proxy_cfg,
+        )
+        shadow_proxy = torch.maximum(shadow_proxy, proxy_global)
+        shadow_threshold = max(float(_cfg_get(proxy_cfg, "SHADOW_THRESHOLD", 0.20)), 1e-6)
+        shadow_power = float(_cfg_get(proxy_cfg, "SHADOW_POWER", 2.0))
+        shadow_weight = torch.clamp((shadow_threshold - gray) / shadow_threshold, 0.0, 1.0)
+        if shadow_power != 1.0:
+            shadow_weight = shadow_weight.pow(shadow_power)
+        shadow_weight = _smooth_shadow_weight(shadow_weight, proxy_cfg)
+        proxy_target = torch.clamp(
+            (1.0 - shadow_weight.unsqueeze(0)) * proxy_global + shadow_weight.unsqueeze(0) * shadow_proxy,
+            0.0,
+            1.0,
+        )
+        return {
+            "proxy_target": proxy_target,
+            "proxy_global": proxy_global,
+            "proxy_shadow": shadow_proxy,
+            "proxy_shadow_weight": shadow_weight,
+            "proxy_gain": float(global_gain.item()),
+            "proxy_stat_mean": float(stat_mean.item()),
+            "proxy_stat_mode": stat_label,
+            "proxy_form": form,
+            "proxy_global_mean": float(proxy_global.mean().item()),
+            "proxy_shadow_mean": float(shadow_proxy.mean().item()),
+            "proxy_blend_mean": float(proxy_target.mean().item()),
+            "proxy_shadow_weight_mean": float(shadow_weight.mean().item()),
+        }
+
+    raise RuntimeError(f"Unsupported PROXY_TARGET.FORM: {form}")
 
 
 
@@ -93,26 +204,36 @@ def prepare_low_light_batch(image, aug_cfg=None, training=True, proxy_cfg=None):
         gamma = eval_gamma
         target_mean = base_target_mean
 
-    proxy_target, proxy_scale, proxy_stat_mean, proxy_stat_mode = build_proxy_target(
+    proxy_info = build_proxy_target(
         image,
         proxy_cfg=proxy_cfg,
         fallback_target_mean=target_mean,
         fallback_min_scale=min_scale,
         fallback_max_scale=max_scale,
+        gamma=float(gamma),
     )
+    proxy_target = proxy_info["proxy_target"]
 
     if not enabled:
         return {
             "supervision": image,
             "reference": image,
             "proxy_target": proxy_target,
+            "proxy_global": proxy_info["proxy_global"],
+            "proxy_shadow": proxy_info["proxy_shadow"],
+            "proxy_shadow_weight": proxy_info["proxy_shadow_weight"],
             "target_mean": float(target_mean),
             "gamma": 1.0,
             "scale": 1.0,
-            "proxy_scale": float(proxy_scale),
+            "proxy_scale": float(proxy_info["proxy_gain"]),
             "proxy_mean": float(proxy_target.mean().item()),
-            "proxy_stat_mean": float(proxy_stat_mean),
-            "proxy_stat_mode": proxy_stat_mode,
+            "proxy_stat_mean": float(proxy_info["proxy_stat_mean"]),
+            "proxy_stat_mode": proxy_info["proxy_stat_mode"],
+            "proxy_form": proxy_info["proxy_form"],
+            "proxy_global_mean": float(proxy_info["proxy_global_mean"]),
+            "proxy_shadow_mean": float(proxy_info["proxy_shadow_mean"]),
+            "proxy_blend_mean": float(proxy_info["proxy_blend_mean"]),
+            "proxy_shadow_weight_mean": float(proxy_info["proxy_shadow_weight_mean"]),
             "low_mean": float(image.mean().item()),
             "mode": "identity",
         }
@@ -129,13 +250,21 @@ def prepare_low_light_batch(image, aug_cfg=None, training=True, proxy_cfg=None):
         "supervision": supervision,
         "reference": image,
         "proxy_target": proxy_target,
+        "proxy_global": proxy_info["proxy_global"],
+        "proxy_shadow": proxy_info["proxy_shadow"],
+        "proxy_shadow_weight": proxy_info["proxy_shadow_weight"],
         "target_mean": float(target_mean),
         "gamma": float(gamma),
         "scale": float(scale),
-        "proxy_scale": float(proxy_scale),
+        "proxy_scale": float(proxy_info["proxy_gain"]),
         "proxy_mean": float(proxy_target.mean().item()),
-        "proxy_stat_mean": float(proxy_stat_mean),
-        "proxy_stat_mode": proxy_stat_mode,
+        "proxy_stat_mean": float(proxy_info["proxy_stat_mean"]),
+        "proxy_stat_mode": proxy_info["proxy_stat_mode"],
+        "proxy_form": proxy_info["proxy_form"],
+        "proxy_global_mean": float(proxy_info["proxy_global_mean"]),
+        "proxy_shadow_mean": float(proxy_info["proxy_shadow_mean"]),
+        "proxy_blend_mean": float(proxy_info["proxy_blend_mean"]),
+        "proxy_shadow_weight_mean": float(proxy_info["proxy_shadow_weight_mean"]),
         "low_mean": float(image.mean().item()),
         "mode": mode,
     }

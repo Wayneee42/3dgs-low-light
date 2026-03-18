@@ -36,8 +36,8 @@ class RGBReconstructionLoss(BaseLossModule):
 
 
 class ReconstructionLoss(BaseLossModule):
-    def __init__(self, lambda_ssim, weight, input_key="recon_hwc", target_key="proxy_target_hwc"):
-        super().__init__(name="reconstruction", weight=weight, enabled=weight > 0.0, start_step=0)
+    def __init__(self, lambda_ssim, weight, start_step=0, input_key="recon_hwc", target_key="proxy_target_hwc"):
+        super().__init__(name="reconstruction", weight=weight, enabled=weight > 0.0, start_step=start_step)
         self.lambda_ssim = float(lambda_ssim)
         self.input_key = str(input_key)
         self.target_key = str(target_key)
@@ -46,6 +46,9 @@ class ReconstructionLoss(BaseLossModule):
         target = context.get(self.target_key)
         if target is None:
             raise RuntimeError("ReconstructionLoss requires proxy_target_hwc, but it is missing.")
+        if not self.is_active(context):
+            zero = zero_scalar_like(context)
+            return zero, {"active": 0.0}
         result = rgb_reconstruction_loss(
             context[self.input_key],
             target,
@@ -54,6 +57,7 @@ class ReconstructionLoss(BaseLossModule):
         return result["total"], {
             "l1": float(result["l1"].detach().item()),
             "ssim": float(result["ssim"].detach().item()),
+            "active": 1.0,
         }
 
 

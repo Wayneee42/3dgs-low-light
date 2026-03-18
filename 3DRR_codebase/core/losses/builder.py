@@ -42,6 +42,7 @@ def build_loss_modules(meta_cfg, model_cfg):
         ReconstructionLoss(
             lambda_ssim=lambda_ssim,
             weight=lambda_reconstruction,
+            start_step=int(_cfg_get(loss_cfg, "RECON_START_STEP", 0)),
             input_key="recon_hwc",
             target_key="proxy_target_hwc",
         ),
