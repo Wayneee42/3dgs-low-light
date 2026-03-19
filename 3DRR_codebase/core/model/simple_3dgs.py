@@ -1,4 +1,4 @@
-# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
+﻿# Copyright (c) Xuangeng Chu (xchu.contact@gmail.com)
 
 import os
 from pathlib import Path
@@ -144,6 +144,66 @@ class Simple3DGS(nn.Module):
         _, unique_indices = np.unique(voxel_indices, axis=0, return_index=True)
         return points[np.sort(unique_indices)]
 
+    def _select_voxel_indices(self, points, voxel_size, quality=None):
+        if points.shape[0] == 0:
+            return np.zeros((0,), dtype=np.int64)
+        if voxel_size <= 0.0:
+            return np.arange(points.shape[0], dtype=np.int64)
+
+        voxel_indices = np.floor(points / voxel_size).astype(np.int64)
+        if quality is None:
+            _, unique_indices = np.unique(voxel_indices, axis=0, return_index=True)
+            return np.sort(unique_indices).astype(np.int64)
+
+        quality = np.asarray(quality, dtype=np.float32)
+        order = np.lexsort(
+            (
+                np.arange(points.shape[0], dtype=np.int64),
+                -quality.astype(np.float64),
+                voxel_indices[:, 2],
+                voxel_indices[:, 1],
+                voxel_indices[:, 0],
+            )
+        )
+        ordered_voxels = voxel_indices[order]
+        keep_mask = np.ones(order.shape[0], dtype=bool)
+        keep_mask[1:] = np.any(ordered_voxels[1:] != ordered_voxels[:-1], axis=1)
+        return order[keep_mask].astype(np.int64)
+
+    def _select_quality_uniform_anchor_indices(self, frame_ids, quality, anchor_target, frame_count):
+        if anchor_target <= 0 or frame_ids.shape[0] == 0:
+            return np.zeros((0,), dtype=np.int64)
+
+        valid_frame_mask = np.bincount(frame_ids, minlength=frame_count) > 0
+        valid_frames = np.nonzero(valid_frame_mask)[0]
+        if valid_frames.shape[0] == 0:
+            return np.zeros((0,), dtype=np.int64)
+
+        selected_parts = []
+        taken = np.zeros(frame_ids.shape[0], dtype=bool)
+        base_quota = anchor_target // valid_frames.shape[0]
+
+        if base_quota > 0:
+            for frame_id in valid_frames:
+                frame_indices = np.nonzero(frame_ids == frame_id)[0]
+                frame_order = frame_indices[np.argsort(-quality[frame_indices], kind="mergesort")]
+                take = frame_order[: min(base_quota, frame_order.shape[0])]
+                if take.shape[0] > 0:
+                    selected_parts.append(take)
+                    taken[take] = True
+
+        selected_count = int(sum(part.shape[0] for part in selected_parts))
+        remaining = max(0, anchor_target - selected_count)
+        if remaining > 0:
+            remaining_indices = np.nonzero(~taken)[0]
+            global_order = remaining_indices[np.argsort(-quality[remaining_indices], kind="mergesort")]
+            take = global_order[:remaining]
+            if take.shape[0] > 0:
+                selected_parts.append(take)
+
+        if not selected_parts:
+            return np.zeros((0,), dtype=np.int64)
+        return np.concatenate(selected_parts).astype(np.int64)
     def _sample_bilinear(self, image, u, v):
         h, w = image.shape
         x0 = np.floor(u).astype(np.int32)
@@ -317,7 +377,12 @@ class Simple3DGS(nn.Module):
             c2ws[frame_key] = c2w
 
         anchor_points = []
+        frame_ids = []
+        gray_values = []
+        depth_grads = []
+        qualities = []
         anchor_frames = 0
+
         for idx, rec in enumerate(records):
             frame_key = rec["frame_key"]
             image_path = rec.get("file_path", None)
@@ -333,14 +398,27 @@ class Simple3DGS(nn.Module):
 
             candidate_mask = np.isfinite(sampled_depth) & (sampled_depth > depth_eps)
             candidate_mask &= depth_grad <= max_depth_grad
+
+            brightness_threshold = 0.0
             if brightness_quantile > 0.0:
                 valid_gray = sampled_gray[np.isfinite(sampled_gray)]
                 if valid_gray.size > 0:
                     brightness_threshold = float(np.percentile(valid_gray, brightness_quantile * 100.0))
                     candidate_mask &= np.isfinite(sampled_gray)
                     candidate_mask &= sampled_gray >= brightness_threshold
+
             if not np.any(candidate_mask):
                 continue
+
+            candidate_gray = np.clip(sampled_gray[candidate_mask], 0.0, 1.0).astype(np.float32)
+            candidate_depth_grad = depth_grad[candidate_mask].astype(np.float32)
+            depth_score = 1.0 - np.clip(candidate_depth_grad / max(max_depth_grad, 1e-6), 0.0, 1.0)
+            gray_score = np.clip(
+                (candidate_gray - brightness_threshold) / max(1.0 - brightness_threshold, 1e-6),
+                0.0,
+                1.0,
+            )
+            quality = (0.7 * depth_score + 0.3 * gray_score).astype(np.float32)
 
             points_world = self._backproject_sampled_depth(
                 sampled_depth=sampled_depth,
@@ -357,19 +435,32 @@ class Simple3DGS(nn.Module):
                 continue
 
             anchor_points.append(points_world)
+            frame_ids.append(np.full(points_world.shape[0], idx, dtype=np.int32))
+            gray_values.append(candidate_gray)
+            depth_grads.append(candidate_depth_grad)
+            qualities.append(quality)
             anchor_frames += 1
 
         if not anchor_points:
             return {
                 "points": np.zeros((0, 3), dtype=np.float32),
+                "frame_ids": np.zeros((0,), dtype=np.int32),
+                "gray": np.zeros((0,), dtype=np.float32),
+                "depth_grad": np.zeros((0,), dtype=np.float32),
+                "quality": np.zeros((0,), dtype=np.float32),
                 "anchor_frames": 0,
+                "frame_count": len(records),
                 "depth_root": depth_root,
             }
 
-        anchor_points = np.concatenate(anchor_points, axis=0)
         return {
-            "points": anchor_points.astype(np.float32),
+            "points": np.concatenate(anchor_points, axis=0).astype(np.float32),
+            "frame_ids": np.concatenate(frame_ids, axis=0).astype(np.int32),
+            "gray": np.concatenate(gray_values, axis=0).astype(np.float32),
+            "depth_grad": np.concatenate(depth_grads, axis=0).astype(np.float32),
+            "quality": np.concatenate(qualities, axis=0).astype(np.float32),
             "anchor_frames": anchor_frames,
+            "frame_count": len(records),
             "depth_root": depth_root,
         }
 
@@ -412,35 +503,75 @@ class Simple3DGS(nn.Module):
         num_points = int(model_cfg.NUM_INIT_POINTS)
         anchor_ratio = float(np.clip(getattr(model_cfg, "INIT_ANCHOR_RATIO", 0.1), 0.0, 1.0))
         anchor_target = int(round(num_points * anchor_ratio))
-        random_target = num_points - anchor_target
         voxel_enabled = bool(getattr(model_cfg, "INIT_VOXEL_DOWNSAMPLE", True))
         voxel_size = float(getattr(model_cfg, "INIT_VOXEL_SIZE", 0.03))
+        selection_mode = str(getattr(model_cfg, "INIT_ANCHOR_SELECTION", "quality_uniform")).lower()
 
         anchor_data = self._collect_anchor_points(model_cfg, data_info, init_context)
         anchor_points = anchor_data["points"]
+        frame_ids = anchor_data["frame_ids"]
+        quality = anchor_data["quality"]
         raw_anchor_points = int(anchor_points.shape[0])
-        if voxel_enabled:
-            anchor_points = self._voxel_downsample_points(anchor_points, voxel_size=voxel_size)
+
+        if selection_mode == "random":
+            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=None) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+        elif selection_mode == "quality_uniform":
+            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=quality) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+        else:
+            raise RuntimeError(f"Unsupported INIT_ANCHOR_SELECTION mode: {selection_mode}")
+
+        anchor_points = anchor_points[dedup_indices]
+        frame_ids = frame_ids[dedup_indices]
+        quality = quality[dedup_indices]
         voxel_anchor_points = int(anchor_points.shape[0])
 
-        anchor_count = min(anchor_target, voxel_anchor_points)
+        if selection_mode == "random":
+            anchor_count = min(anchor_target, voxel_anchor_points)
+            if anchor_count > 0:
+                selected_indices = np.random.choice(voxel_anchor_points, size=anchor_count, replace=False).astype(np.int64)
+            else:
+                selected_indices = np.zeros((0,), dtype=np.int64)
+        else:
+            selected_indices = self._select_quality_uniform_anchor_indices(
+                frame_ids=frame_ids,
+                quality=quality,
+                anchor_target=anchor_target,
+                frame_count=int(anchor_data["frame_count"]),
+            )
+            anchor_count = int(selected_indices.shape[0])
+
         if anchor_count > 0:
-            choice = np.random.choice(voxel_anchor_points, size=anchor_count, replace=False)
-            sampled_anchor_points = anchor_points[choice]
+            sampled_anchor_points = anchor_points[selected_indices]
+            selected_quality = quality[selected_indices]
+            selected_frame_counts = np.bincount(frame_ids[selected_indices], minlength=int(anchor_data["frame_count"]))
         else:
             sampled_anchor_points = np.zeros((0, 3), dtype=np.float32)
+            selected_quality = np.zeros((0,), dtype=np.float32)
+            selected_frame_counts = np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
 
         random_count = num_points - anchor_count
         random_points = self._random_means(random_count).cpu().numpy().astype(np.float32)
         means = np.concatenate([random_points, sampled_anchor_points], axis=0)
         np.random.shuffle(means)
 
+        valid_frame_counts = np.bincount(frame_ids, minlength=int(anchor_data["frame_count"])) if frame_ids.shape[0] > 0 else np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+        valid_anchor_frames = int(np.count_nonzero(valid_frame_counts))
+        selected_valid_counts = selected_frame_counts[valid_frame_counts > 0]
+        selected_frame_min = int(selected_valid_counts.min()) if selected_valid_counts.size > 0 else 0
+        selected_frame_median = float(np.median(selected_valid_counts)) if selected_valid_counts.size > 0 else 0.0
+        selected_frame_max = int(selected_valid_counts.max()) if selected_valid_counts.size > 0 else 0
+        quality_mean_all = float(quality.mean()) if quality.shape[0] > 0 else 0.0
+        quality_mean_selected = float(selected_quality.mean()) if selected_quality.shape[0] > 0 else 0.0
+
         print(
             "[Init] hybrid_anchor: "
             f"depth_dir={anchor_data['depth_root']}, anchor_frames={anchor_data['anchor_frames']}, "
             f"raw_anchor_points={raw_anchor_points}, voxel_anchor_points={voxel_anchor_points}, "
             f"anchor_target={anchor_target}, anchor_used={anchor_count}, random_used={random_count}, "
-            f"voxel_enabled={voxel_enabled}, voxel_size={voxel_size}, "
+            f"selection_mode={selection_mode}, valid_anchor_frames={valid_anchor_frames}, "
+            f"selected_frame_min={selected_frame_min}, selected_frame_median={selected_frame_median:.1f}, "
+            f"selected_frame_max={selected_frame_max}, quality_mean_selected={quality_mean_selected:.4f}, "
+            f"quality_mean_all={quality_mean_all:.4f}, voxel_enabled={voxel_enabled}, voxel_size={voxel_size}, "
             f"max_depth_grad={getattr(model_cfg, 'INIT_ANCHOR_MAX_DEPTH_GRAD', 0.08)}, "
             f"brightness_quantile={getattr(model_cfg, 'INIT_ANCHOR_BRIGHTNESS_QUANTILE', 0.0)}"
         )
@@ -546,3 +677,5 @@ class Simple3DGS(nn.Module):
             "alphas": alphas,
             "info": info,
         }
+
+

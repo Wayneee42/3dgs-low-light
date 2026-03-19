@@ -1,4 +1,4 @@
-DATASET:
+﻿DATASET:
   NAME: 'Cupcake'
   DATA_PATH: 'dataset/Development/lowlight_development/development/Cupcake'
   BACKGROUND_COLOR: 255.0
@@ -13,6 +13,7 @@ MODEL:
   INIT_ANCHOR_RATIO: 0.10
   INIT_ANCHOR_MAX_DEPTH_GRAD: 0.08
   INIT_ANCHOR_BRIGHTNESS_QUANTILE: 0.7
+  INIT_ANCHOR_SELECTION: 'quality_uniform'
   INIT_DEPTH_DIR: 'auxiliaries/depth'
   INIT_DEPTH_NORMALIZATION: 'per_frame_robust'
   INIT_DEPTH_NORM_LOW_Q: 1.0
@@ -80,3 +81,4 @@ PRIORS:
 
 EXPERIMENT:
   STAGE: 'stage4_tuned'
+
