@@ -1,0 +1,16 @@
+我已把仓库（重点 `3DRR_codebase`）和你给的历史会话读完，当前实验进程可以归纳为：
+
+1. 已完成从 `stage0/2/3/4/5a/5b` 到 `stage6_shadow_ft_v2` 的代码链路迁移，核心是把先验从“RGB后处理”改成显式头：`D_r`(`depth_feat`)、`P_r`(`prior_feat`)、以及 illumination 重建头。关键实现在 [train.py](D:/github/3dgs-low-light/3DRR_codebase/train.py)、[simple_3dgs.py](D:/github/3dgs-low-light/3DRR_codebase/core/model/simple_3dgs.py)、[builder.py](D:/github/3dgs-low-light/3DRR_codebase/core/losses/builder.py)、[augment.py](D:/github/3dgs-low-light/3DRR_codebase/core/libs/augment.py)。
+
+2. 指标时间线（BlueHawaii）显示：  
+`stage2 16.76/0.642 -> stage4 17.14/0.651 -> stage5b 16.82/0.657 -> stage6 7.41/0.055(严重退化) -> stage6_shadow 19.63/0.655 -> stage5b + stage6_shadow_ft 20.98/0.671 -> stage4_tuned + stage5b_ft + stage6_shadow_ft_v2 21.11/0.678(当前最好)`。  
+对应结果在 [outputs](D:/github/3dgs-low-light/3DRR_codebase/outputs) 下各 `results.json/per_view.json`。
+
+3. 目前实验主线已转成“三阶段训练”策略（Geometry-first）：`stage4_tuned -> stage5b_ft -> stage6_shadow_ft_v2`。规划文档在 [三阶段训练plan.md](D:/github/3dgs-low-light/三阶段训练plan.md)（编码有轻微损坏但核心内容可读），且为了缓解由第一阶段stage4_tuned引入的几何漂移、浮动问题，引入npy形式深度图替代jpg，有效缓解了GearWorks场景的几何不稳定，但其他场景如Laboratory依然存在几何问题。
+
+4. 执行进度上，第一轮（BlueHawaii + GearWorks + Laboratory）基本跑通；第二轮（Chocolate/Cupcake/Test系列场景）在 `stage6_shadow_ft_v2` 还未完整落地。当前能看到之前的“stage5b + stage6_shadow_ft的两阶段训练”的开发集提交包：`submission_5_5_5_5_jpg` 。
+
+5. 从历史会话看，关键转折是：  
+3月11日修过 `depth_aux` 形状错误与 `dep_*` 激活问题；3月15日尝试 exposure 改法后性能变差；随后转向 `illumination head + recon + proxy shadow_blend` 路线并显著回升。会话来源：[rollout-2026-03-10...jsonl](C:/Users/34958/.codex/sessions/2026/03/10/rollout-2026-03-10T20-41-51-019cd7c4-9697-7423-a033-b41c4f97350a.jsonl)。
+
+补充结论：`denoiser/PDM` 仍未引入当前主干（与你的待办一致），见 [待定.md](D:/github/3dgs-low-light/待定.md)。

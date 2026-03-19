@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 
 import argparse
 import json
@@ -21,7 +21,6 @@ if str(REPO_ROOT) not in sys.path:
 from core.data import build_frame_key
 
 
-
 def iter_scene_frames(scene_root):
     scene_root = Path(scene_root)
     for split in ("train", "val", "test"):
@@ -38,14 +37,13 @@ def iter_scene_frames(scene_root):
             yield build_frame_key(relative_path), image_path
 
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Extract Marigold monocular depth priors for an official Blender scene.")
     parser.add_argument("scene_root", type=str, help="Path to an official Blender scene root")
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to the Marigold checkpoint directory")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--auxiliary-dir", type=str, default="auxiliaries")
-    parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true", help="Deprecated. Kept for compatibility; outputs are always overwritten.")
     args = parser.parse_args()
 
     from marigold import MarigoldPipeline
@@ -59,12 +57,9 @@ if __name__ == "__main__":
     frames = list(iter_scene_frames(scene_root))
     with torch.no_grad():
         for frame_key, image_path in tqdm(frames, desc="Estimating Marigold depth"):
-            output_path = depth_root / f"{frame_key}.png"
-            if args.skip_existing and output_path.exists():
-                continue
+            output_path = depth_root / f"{frame_key}.npy"
 
             input_image = Image.open(image_path).convert("RGB")
             depth_pred = pipe(input_image).depth_np
-            depth_pred = np.clip(depth_pred, 0.0, 1.0)
-            depth_uint8 = (depth_pred * 255.0).astype(np.uint8)
-            Image.fromarray(depth_uint8).save(output_path)
+            depth_pred = np.clip(depth_pred, 0.0, 1.0).astype(np.float32)
+            np.save(output_path, depth_pred)

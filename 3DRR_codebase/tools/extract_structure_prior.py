@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 
 import argparse
 import json
@@ -47,7 +47,7 @@ if __name__ == "__main__":
     parser.add_argument("--invariant", type=str, default="W")
     parser.add_argument("--kernel-size", type=int, default=3)
     parser.add_argument("--scale", type=float, default=0.8)
-    parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument("--skip-existing", action="store_true", help="Deprecated. Kept for compatibility; outputs are always overwritten.")
     args = parser.parse_args()
 
     extractor = build_structure_extractor(
@@ -65,8 +65,6 @@ if __name__ == "__main__":
     with torch.no_grad():
         for frame_key, image_path in tqdm(frames, desc="Extracting structure priors"):
             output_path = structure_root / f"{frame_key}.png"
-            if args.skip_existing and output_path.exists():
-                continue
 
             input_image = Image.open(image_path).convert("RGB")
             image_np = np.asarray(input_image, dtype=np.float32) / 255.0

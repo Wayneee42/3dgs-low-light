@@ -81,15 +81,22 @@ class Simple3DGS(nn.Module):
         if depth_path.suffix.lower() == ".npy":
             depth = np.load(depth_path).astype(np.float32)
         else:
-            depth = np.asarray(Image.open(depth_path).convert("L"), dtype=np.float32) / 255.0
+            depth_raw = np.asarray(Image.open(depth_path))
+            if depth_raw.ndim == 3:
+                depth_raw = depth_raw[..., 0]
+            depth = depth_raw.astype(np.float32)
+            if np.issubdtype(depth_raw.dtype, np.integer):
+                max_value = float(np.iinfo(depth_raw.dtype).max)
+                if max_value > 0.0:
+                    depth = depth / max_value
         if depth.shape != (height, width):
             depth = np.asarray(
-                Image.fromarray(np.asarray(np.clip(depth, 0.0, 1.0) * 255.0, dtype=np.uint8), mode="L").resize(
+                Image.fromarray(depth.astype(np.float32), mode="F").resize(
                     (width, height), resample=Image.BILINEAR
                 ),
                 dtype=np.float32,
-            ) / 255.0
-        return depth
+            )
+        return depth.astype(np.float32)
 
     def _load_gray_image(self, image_path, width, height):
         image = np.asarray(Image.open(image_path).convert("RGB"), dtype=np.float32) / 255.0
