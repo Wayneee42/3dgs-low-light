@@ -1,16 +1,136 @@
-我已把仓库（重点 `3DRR_codebase`）和你给的历史会话读完，当前实验进程可以归纳为：
+﻿当前仓库重点仍是 `3DRR_codebase`。到 2026-03-21 为止，代码和实验主线可概括为：
 
-1. 已完成从 `stage0/2/3/4/5a/5b` 到 `stage6_shadow_ft_v2` 的代码链路迁移，核心是把先验从“RGB后处理”改成显式头：`D_r`(`depth_feat`)、`P_r`(`prior_feat`)、以及 illumination 重建头。关键实现在 [train.py](D:/github/3dgs-low-light/3DRR_codebase/train.py)、[simple_3dgs.py](D:/github/3dgs-low-light/3DRR_codebase/core/model/simple_3dgs.py)、[builder.py](D:/github/3dgs-low-light/3DRR_codebase/core/losses/builder.py)、[augment.py](D:/github/3dgs-low-light/3DRR_codebase/core/libs/augment.py)。
+1. 已完成的核心迁移
+- 已从最早的 `stage2/stage4/stage5a/stage5b` 迁到当前主线：`stage4_tuned -> stage5b_ft -> stage6_shadow_ft_v2`。
+- 先验已经不是“对 RGB 的后验正则”，而是显式辅助头：
+  - `D_r` 对应 `depth_feat`
+  - `P_r` 对应 `prior_feat`
+- 外观恢复主线为 `stage6_shadow_ft_v2`：
+  - scalar illumination head
+  - `proxy_target`
+  - `shadow_blend`
+  - `recon` 分支
+- 关键代码位置：
+  - `3DRR_codebase/core/model/simple_3dgs.py`
+  - `3DRR_codebase/core/libs/augment.py`
+  - `3DRR_codebase/core/losses/builder.py`
+  - `3DRR_codebase/core/losses/modules.py`
+  - `3DRR_codebase/train.py`
 
-2. 指标时间线（BlueHawaii）显示：  
-`stage2 16.76/0.642 -> stage4 17.14/0.651 -> stage5b 16.82/0.657 -> stage6 7.41/0.055(严重退化) -> stage6_shadow 19.63/0.655 -> stage5b + stage6_shadow_ft 20.98/0.671 -> stage4_tuned + stage5b_ft + stage6_shadow_ft_v2 21.11/0.678(当前最好)`。  
-对应结果在 [outputs](D:/github/3dgs-low-light/3DRR_codebase/outputs) 下各 `results.json/per_view.json`。
+2. 当前最有效的训练链路
+- BlueHawaii 上最强主线不是单阶段，而是 warm-start 三阶段：
+  - `stage4_tuned`
+  - `stage5b_ft`
+  - `stage6_shadow_ft_v2`
+- Development 也已证明：
+  - `stage5b -> stage6_shadow_ft` 能明显优于单独 `stage5b`
+  - 再引入 `stage4_tuned` 和更强初始化后还能继续提升
+- 经验上：
+  - `stage6` 从头训练容易把几何带坏
+  - `stage5b -> stage6_shadow_ft` 的短程 fine-tune 更稳
 
-3. 目前实验主线已转成“三阶段训练”策略（Geometry-first）：`stage4_tuned -> stage5b_ft -> stage6_shadow_ft_v2`。规划文档在 [三阶段训练plan.md](D:/github/3dgs-low-light/三阶段训练plan.md)（编码有轻微损坏但核心内容可读），且为了缓解由第一阶段stage4_tuned引入的几何漂移、浮动问题，引入npy形式深度图替代jpg，有效缓解了GearWorks场景的几何不稳定，但其他场景如Laboratory依然存在几何问题。
+3. 深度先验数据格式的重要变化
+- 现在深度先验正式使用 `Marigold` 导出的 `.npy`。
+- 之前训练 loader 只认图片格式 depth，导致很多场景虽然目录里有 `.npy`，训练时实际仍可能读的是 `.png`。
+- 已修复 `3DRR_codebase/core/data/blender.py`：
+  - `resolve_auxiliary_path()` 现在优先找 `.npy`
+  - `_load_optional_auxiliary()` 能直接加载 `.npy` depth
+- 结论：只要同名 `.npy` 和图片同时存在，训练默认优先读取 `.npy`。
 
-4. 执行进度上，第一轮（BlueHawaii + GearWorks + Laboratory）基本跑通；第二轮（Chocolate/Cupcake/Test系列场景）在 `stage6_shadow_ft_v2` 还未完整落地。当前能看到之前的“stage5b + stage6_shadow_ft的两阶段训练”的开发集提交包：`submission_5_5_5_5_jpg` 。
+4. 初始化路线的结论
+- 单目深度直接 backproject / occupancy-aware init：
+  - 在 GearWorks 有时有效
+  - 在 Laboratory/Cupcake 容易把错误几何提前种进去
+  - 总体不如预期稳定
+- `hybrid_anchor` 仍可作为弱先验基线保留，但继续卷 anchor heuristics 的收益已经很有限。
+- 当前最有价值的新初始化路线是：
+  - 固定官方位姿
+  - 导出增强后的 train 图
+  - 用 COLMAP sparse triangulation 得到多视图一致的稀疏点
+  - 作为弱初始化源接入 `hybrid_anchor_colmap_sparse`
 
-5. 从历史会话看，关键转折是：  
-3月11日修过 `depth_aux` 形状错误与 `dep_*` 激活问题；3月15日尝试 exposure 改法后性能变差；随后转向 `illumination head + recon + proxy shadow_blend` 路线并显著回升。会话来源：[rollout-2026-03-10...jsonl](C:/Users/34958/.codex/sessions/2026/03/10/rollout-2026-03-10T20-41-51-019cd7c4-9697-7423-a033-b41c4f97350a.jsonl)。
+5. COLMAP sparse 初始化现状
+- 已新增工具：
+  - `3DRR_codebase/tools/build_fixed_pose_colmap_sparse_init.py`
+- 已新增初始化模式：
+  - `INIT_MODE = hybrid_anchor_colmap_sparse`
+- 已新增配置目录：
+  - `3DRR_codebase/config/stage4_tuned_colmap`
+- 当前实现语义：
+  - 约 `10%` `hybrid_anchor`
+  - 约 `20%` COLMAP sparse points（实际若点不够则只用现有点）
+  - 其余随机初始化
+- 这条线目前对细结构场景最有帮助，尤其：
+  - `Laboratory`
+  - `Cupcake`
+- 已观察到：
+  - Laboratory sparse 可用点约 4k，仍能带来一定改善
+  - Cupcake sparse 可用点约 9k，改善更明显，吊坠等细结构更清晰
 
-补充结论：`denoiser/PDM` 仍未引入当前主干（与你的待办一致），见 [待定.md](D:/github/3dgs-low-light/待定.md)。
+6. COLMAP 工具链的注意事项
+- 当前环境中，COLMAP 的 CLI 选项存在版本差异：
+  - 老版常见 `SiftExtraction/SiftMatching`
+  - 新版常见 `FeatureExtraction/FeatureMatching`
+- 现工具已兼容两套命名。
+- GPU 版工具参数已支持：
+  - `--use-gpu 1`
+  - `--gpu-index 0`
+- 但 COLMAP 本身的版本仍可能影响 fixed-pose triangulation 路线，已在实验中踩过：
+  - 新版某些构建在 `point_triangulator` 上可能有 known-pose 崩溃
+  - 太老的版本又可能和 CUDA 12.1 / 新 nvcc 不兼容
+- 当前本地与云端都已能至少在部分场景（如 Laboratory/Cupcake）跑通 sparse points 导出。
+
+7. 当前配置状态
+- `config/stage5b_ft/*.yaml` 的 warm-start 来源已统一切到：
+  - `outputs/stage4_tuned_colmap/{Scene}/step_15000/step_15000.pt`
+- `config/stage6_shadow_ft_v2/*.yaml` 继续接：
+  - `outputs/stage5b_ft/{Scene}/step_5000/step_5000.pt`
+- 已补齐 Test 三个场景的三阶段配置：
+  - `MilkCookie`
+  - `Popcorn`
+  - `Ujikintoki`
+- 已更新 `COMMANDS.txt`，包括：
+  - depth/structure 提取
+  - COLMAP sparse 初始化
+  - stage4_tuned_colmap
+  - stage5b_ft
+  - stage6_shadow_ft_v2
+
+8. 当前结果总结
+- Development 过去主线提交曾从约 `15.17` 提升到约 `16.59`。
+- 最近将 7 个场景（Development + Test）综合后，提交结果约为：
+  - PSNR `16.93`
+- 相比之前已经继续提升，但榜单上仍有 `17/18/20` 级结果，说明当前主线仍有上限差距。
+- 当前判断：
+  - 几何初始化和三阶段 warm-start 已经从“短板”修到“中等偏强”
+  - 真正还制约上限的，更像是最终外观恢复能力，而不是初始化本身
+
+9. 当前最值得继续的方向
+- 初始化方面：
+  - 对 `Laboratory/Cupcake`，COLMAP sparse init 值得继续
+  - 不建议继续深挖单目深度 occupancy / 更复杂 anchor 打分
+- 方法方面：
+  - 如果继续冲榜，下一步更值得补的是“外观恢复上限”，而不是再卷初始化
+  - 可能方向包括：
+    - 用 COLMAP sparse points 做训练期几何约束，而不只是初始化
+    - 更 scene-adaptive 的 proxy / recon 亮度策略
+    - 轻量 refinement / denoising 头
+- 目前尚未正式迁入主线：
+  - LITA-GS 的完整 denoiser / PDM
+  - tone mapper
+  - 更强的 paired normal-light reconstruction 路线
+
+10. 最近修过的重要代码问题
+- `eval.py` 旧接口 `return_depth=False` 与新版 `Simple3DGS.forward(render_heads=...)` 不兼容，已修过。
+- `DepthPriorLoss` 对 `(H, W, 1)` 的 depth shape 报错问题已修过。
+- `Blender` loader 之前不读 `.npy` depth，已修复。
+- `build_fixed_pose_colmap_sparse_init.py` 已去掉对 `omegaconf` 的不必要依赖，并改成直接读取 YAML + 动态加载 `augment.py`。
+
+11. 当前建议给新窗口的操作顺序
+- 如果目标是继续稳定提升 `Laboratory/Cupcake/Test`：
+  1. 先跑 `build_fixed_pose_colmap_sparse_init.py`
+  2. 再跑 `stage4_tuned_colmap`
+  3. 再跑 `stage5b_ft`
+  4. 最后跑 `stage6_shadow_ft_v2`
+- 如果目标是继续研究新方法：
+  - 默认从当前最强主线出发，不要回退到老的 `hybrid_anchor_occupancy` 或早期 `stage6` 从头训练路线
