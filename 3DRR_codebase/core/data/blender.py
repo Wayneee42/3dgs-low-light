@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import torch
 import torchvision
 
@@ -146,6 +147,9 @@ class Blender(torch.utils.data.Dataset):
         )
         if aux_path is None:
             return None
+        aux_path = str(aux_path)
+        if aux_path.lower().endswith('.npy'):
+            return load_npy_auxiliary(aux_path, channel=channel, size=(self._data_info['img_h'], self._data_info['img_w']))
         return load_img(aux_path, channel=channel).float() / 255.0
 
 
@@ -156,11 +160,35 @@ def resolve_auxiliary_path(scene_root, auxiliary_dir, modality, frame_key, alias
         modality_root = Path(scene_root) / auxiliary_dir / modality_name
         if not modality_root.exists():
             continue
-        for extension in (".png", ".jpg", ".jpeg", ".JPG", ".JPEG"):
+        for extension in (".npy", ".png", ".jpg", ".jpeg", ".JPG", ".JPEG"):
             candidate = modality_root / f"{frame_key}{extension}"
             if candidate.exists():
                 return str(candidate)
     return None
+
+
+
+def load_npy_auxiliary(file_name, channel=1, size=None):
+    array = np.load(file_name).astype(np.float32)
+    if array.ndim == 2:
+        array = array[None, ...]
+    elif array.ndim == 3 and array.shape[0] not in (1, 3, 4):
+        array = np.transpose(array, (2, 0, 1))
+    if array.ndim != 3:
+        raise RuntimeError(f"Unsupported npy auxiliary shape {array.shape} for {file_name}")
+    tensor = torch.from_numpy(array)
+    if size is not None and tuple(tensor.shape[-2:]) != tuple(size):
+        tensor = torch.nn.functional.interpolate(
+            tensor.unsqueeze(0),
+            size=size,
+            mode='bilinear',
+            align_corners=False,
+        ).squeeze(0)
+    if channel == 1 and tensor.shape[0] != 1:
+        tensor = tensor[:1]
+    elif channel == 3 and tensor.shape[0] == 1:
+        tensor = tensor.repeat(3, 1, 1)
+    return tensor
 
 
 
@@ -174,3 +202,4 @@ def load_img(file_name, channel=3):
     image = torchvision.io.read_image(file_name, mode=mode)
     assert image is not None, file_name
     return image
+
