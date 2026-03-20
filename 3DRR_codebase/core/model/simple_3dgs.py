@@ -33,7 +33,11 @@ class Simple3DGS(nn.Module):
             means = self._init_means_from_depth_backproject(model_cfg, data_info, init_context)
         elif init_mode == "hybrid_anchor" and init_context is not None:
             means = self._init_means_from_hybrid_anchor(model_cfg, data_info, init_context)
-        elif init_mode in {"depth_backproject", "hybrid_anchor"} and init_context is None:
+        elif init_mode == "hybrid_anchor_occupancy" and init_context is not None:
+            means = self._init_means_from_hybrid_anchor_occupancy(model_cfg, data_info, init_context)
+        elif init_mode == "hybrid_anchor_colmap_sparse" and init_context is not None:
+            means = self._init_means_from_hybrid_anchor_colmap_sparse(model_cfg, data_info, init_context)
+        elif init_mode in {"depth_backproject", "hybrid_anchor", "hybrid_anchor_occupancy", "hybrid_anchor_colmap_sparse"} and init_context is None:
             print(f"[Init] {init_mode} requested but no init_context provided; fallback to random means.")
             means = self._random_means(num_points)
         else:
@@ -69,6 +73,15 @@ class Simple3DGS(nn.Module):
 
     def _random_means(self, num_points):
         return (torch.rand(num_points, 3) - 0.5) * 10.0
+
+    def _random_means_numpy(self, num_points):
+        return self._random_means(num_points).cpu().numpy().astype(np.float32)
+
+    def _resolve_npy_depth_path(self, depth_root, frame_key):
+        candidate = depth_root / f"{frame_key}.npy"
+        if candidate.exists():
+            return candidate
+        return None
 
     def _resolve_depth_path(self, depth_root, frame_key):
         for ext in NPY_EXTS + IMAGE_EXTS:
@@ -331,6 +344,332 @@ class Simple3DGS(nn.Module):
             "depth_root": depth_root,
         }
 
+
+    def _load_colmap_sparse_points(self, model_cfg, init_context):
+        scene_root = init_context.get("scene_root", None)
+        if scene_root is None:
+            raise RuntimeError("COLMAP sparse init requires init_context['scene_root']")
+
+        colmap_rel_dir = str(getattr(model_cfg, "INIT_COLMAP_DIR", "auxiliaries/colmap_sparse"))
+        colmap_root = Path(colmap_rel_dir) if os.path.isabs(colmap_rel_dir) else Path(scene_root) / colmap_rel_dir
+        points_path = colmap_root / "points.npy"
+        if not points_path.exists():
+            raise RuntimeError(f"Missing COLMAP sparse points file: {points_path}")
+
+        points = np.load(points_path)
+        if points.ndim != 2 or points.shape[1] != 3:
+            raise RuntimeError(f"COLMAP sparse points must have shape [N, 3], got {tuple(points.shape)} from {points_path}")
+        points = points.astype(np.float32)
+        raw_points = int(points.shape[0])
+
+        voxel_size = float(getattr(model_cfg, "INIT_COLMAP_VOXEL_SIZE", 0.02))
+        points = self._voxel_downsample_points(points, voxel_size=voxel_size)
+        voxel_points = int(points.shape[0])
+        min_points = int(getattr(model_cfg, "INIT_COLMAP_MIN_POINTS", 1000))
+        if voxel_points < min_points:
+            raise RuntimeError(
+                f"COLMAP sparse points after voxel downsample ({voxel_points}) below INIT_COLMAP_MIN_POINTS ({min_points})"
+            )
+
+        return {
+            "points": points.astype(np.float32),
+            "raw_points": raw_points,
+            "voxel_points": voxel_points,
+            "colmap_root": colmap_root,
+            "points_path": points_path,
+            "voxel_size": voxel_size,
+        }
+
+    def _sample_colmap_sparse_points(self, model_cfg, init_context, colmap_target):
+        if colmap_target <= 0:
+            return {
+                "points": np.zeros((0, 3), dtype=np.float32),
+                "raw_points": 0,
+                "voxel_points": 0,
+                "used_points": 0,
+                "colmap_root": None,
+                "points_path": None,
+                "voxel_size": float(getattr(model_cfg, "INIT_COLMAP_VOXEL_SIZE", 0.02)),
+            }
+
+        colmap_data = self._load_colmap_sparse_points(model_cfg, init_context)
+        sparse_points = colmap_data["points"]
+        colmap_used = min(int(colmap_target), int(sparse_points.shape[0]))
+        if colmap_used > 0:
+            choice = np.random.choice(sparse_points.shape[0], size=colmap_used, replace=False)
+            sampled_points = sparse_points[choice].astype(np.float32)
+        else:
+            sampled_points = np.zeros((0, 3), dtype=np.float32)
+
+        return {
+            "points": sampled_points,
+            "raw_points": int(colmap_data["raw_points"]),
+            "voxel_points": int(colmap_data["voxel_points"]),
+            "used_points": int(colmap_used),
+            "colmap_root": colmap_data["colmap_root"],
+            "points_path": colmap_data["points_path"],
+            "voxel_size": float(colmap_data["voxel_size"]),
+        }
+
+    def _collect_occupancy_points(self, model_cfg, data_info, init_context):
+        records = list(init_context.get("records", []))
+        scene_root = init_context.get("scene_root", None)
+        if scene_root is None:
+            raise RuntimeError("Occupancy init requires init_context['scene_root']")
+        if not records:
+            raise RuntimeError("Occupancy init requires non-empty train records")
+
+        depth_rel_dir = str(getattr(model_cfg, "INIT_DEPTH_DIR", "auxiliaries/depth"))
+        depth_root = Path(depth_rel_dir) if os.path.isabs(depth_rel_dir) else Path(scene_root) / depth_rel_dir
+        if not depth_root.exists():
+            raise RuntimeError(f"Depth init directory does not exist: {depth_root}")
+
+        near = float(getattr(model_cfg, "INIT_BACKPROJECT_NEAR", 0.2))
+        far = float(getattr(model_cfg, "INIT_BACKPROJECT_FAR", 6.0))
+        stride = int(max(1, int(getattr(model_cfg, "INIT_OCCUPANCY_STRIDE", 8))))
+        depth_eps = float(getattr(model_cfg, "INIT_BACKPROJECT_DEPTH_EPS", 1e-3))
+        invert_depth = bool(getattr(model_cfg, "INIT_BACKPROJECT_DEPTH_INVERT", False))
+
+        width = int(data_info["img_w"])
+        height = int(data_info["img_h"])
+        intrinsics = (float(self.fl_x), float(self.fl_y), float(self.cx), float(self.cy))
+
+        xs = np.arange(0, width, stride, dtype=np.float32)
+        ys = np.arange(0, height, stride, dtype=np.float32)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+
+        points_world_all = []
+        frame_ids_all = []
+        used_frames = 0
+        dropped_frames = 0
+
+        for idx, rec in enumerate(records):
+            frame_key = rec.get("frame_key")
+            transform_matrix = rec.get("transform_matrix")
+            if frame_key is None or transform_matrix is None:
+                raise RuntimeError("Each occupancy init record must include frame_key and transform_matrix")
+            depth_path = self._resolve_npy_depth_path(depth_root, frame_key)
+            if depth_path is None:
+                raise RuntimeError(f"Missing .npy occupancy depth for train frame '{frame_key}' in {depth_root}")
+            depth = self._load_depth(depth_path, width, height)
+            depth = self._normalize_depth_for_init(depth, model_cfg, depth_eps)
+            sampled = depth[::stride, ::stride]
+            valid = np.isfinite(sampled) & (sampled > depth_eps)
+            if not np.any(valid):
+                dropped_frames += 1
+                continue
+            c2w = np.eye(4, dtype=np.float32)
+            if torch.is_tensor(transform_matrix):
+                c2w[:3, :] = transform_matrix.detach().cpu().numpy().astype(np.float32)
+            else:
+                c2w[:3, :] = np.asarray(transform_matrix, dtype=np.float32)
+            points_world = self._backproject_sampled_depth(
+                sampled_depth=sampled,
+                grid_x=grid_x,
+                grid_y=grid_y,
+                valid_mask=valid,
+                c2w=c2w,
+                intrinsics=intrinsics,
+                near=near,
+                far=far,
+                invert_depth=invert_depth,
+            )
+            if points_world.shape[0] == 0:
+                dropped_frames += 1
+                continue
+            points_world_all.append(points_world)
+            frame_ids_all.append(np.full(points_world.shape[0], idx, dtype=np.int32))
+            used_frames += 1
+
+        if not points_world_all:
+            raise RuntimeError("Occupancy back-projection produced no valid 3D points.")
+
+        points_world_all = np.concatenate(points_world_all, axis=0)
+        frame_ids_all = np.concatenate(frame_ids_all, axis=0)
+        return {
+            "points": points_world_all.astype(np.float32),
+            "frame_ids": frame_ids_all.astype(np.int32),
+            "raw_total_points": int(points_world_all.shape[0]),
+            "used_frames": used_frames,
+            "dropped_frames": dropped_frames,
+            "depth_root": depth_root,
+            "stride": stride,
+        }
+
+    def _build_supported_occupancy_voxel_centers(self, points, frame_ids, voxel_size, min_frame_support):
+        if points.shape[0] == 0:
+            return {
+                "centers": np.zeros((0, 3), dtype=np.float32),
+                "support_counts": np.zeros((0,), dtype=np.int32),
+                "voxel_total_points": 0,
+                "supported_voxel_points": 0,
+            }
+        if frame_ids.shape[0] != points.shape[0]:
+            raise RuntimeError("Occupancy frame_ids and points must have matching length")
+
+        voxel_indices = np.floor(points / voxel_size).astype(np.int64)
+        unique_voxels = np.unique(voxel_indices, axis=0)
+        voxel_total_points = int(unique_voxels.shape[0])
+
+        voxel_frame = np.concatenate([voxel_indices, frame_ids.astype(np.int64)[:, None]], axis=1)
+        unique_voxel_frame = np.unique(voxel_frame, axis=0)
+        unique_voxels_by_frame = unique_voxel_frame[:, :3]
+        supported_voxels, support_counts = np.unique(unique_voxels_by_frame, axis=0, return_counts=True)
+
+        min_frame_support = max(1, int(min_frame_support))
+        keep = support_counts >= min_frame_support
+        if not np.any(keep):
+            return {
+                "centers": np.zeros((0, 3), dtype=np.float32),
+                "support_counts": np.zeros((0,), dtype=np.int32),
+                "voxel_total_points": voxel_total_points,
+                "supported_voxel_points": 0,
+            }
+
+        supported_voxels = supported_voxels[keep]
+        support_counts = support_counts[keep].astype(np.int32)
+        voxel_centers = (supported_voxels.astype(np.float32) + 0.5) * float(voxel_size)
+        return {
+            "centers": voxel_centers.astype(np.float32),
+            "support_counts": support_counts,
+            "voxel_total_points": voxel_total_points,
+            "supported_voxel_points": int(voxel_centers.shape[0]),
+        }
+
+    def _sample_occupancy_random_points(self, model_cfg, data_info, init_context, random_count):
+        if random_count <= 0:
+            return {
+                "points": np.zeros((0, 3), dtype=np.float32),
+                "occupancy_raw_points": 0,
+                "occupancy_voxel_points": 0,
+                "occupancy_supported_voxel_points": 0,
+                "occupancy_used_frames": 0,
+                "occupancy_dropped_frames": 0,
+                "occupancy_random_target": 0,
+                "occupancy_random_used": 0,
+                "global_random_used": 0,
+                "occupancy_stride": int(max(1, int(getattr(model_cfg, "INIT_OCCUPANCY_STRIDE", 8)))),
+                "occupancy_voxel_size": float(getattr(model_cfg, "INIT_OCCUPANCY_VOXEL_SIZE", 0.08)),
+                "occupancy_jitter_std": 0.0,
+                "occupancy_min_frame_support": int(max(1, int(getattr(model_cfg, "INIT_OCCUPANCY_MIN_FRAME_SUPPORT", 2)))),
+                "occupancy_sample_ratio": float(getattr(model_cfg, "INIT_OCCUPANCY_SAMPLE_RATIO", 0.20)),
+                "occupancy_fallback_to_global_random": False,
+                "warning": None,
+                "depth_root": None,
+            }
+
+        occupancy_ratio = float(getattr(model_cfg, "INIT_OCCUPANCY_RANDOM_RATIO", 0.40))
+        global_ratio = float(getattr(model_cfg, "INIT_GLOBAL_RANDOM_RATIO", 0.60))
+        ratio_sum = occupancy_ratio + global_ratio
+        if not np.isfinite(ratio_sum) or abs(ratio_sum - 1.0) > 1e-6:
+            raise RuntimeError(
+                f"INIT_OCCUPANCY_RANDOM_RATIO + INIT_GLOBAL_RANDOM_RATIO must equal 1.0, got {ratio_sum:.6f}"
+            )
+
+        voxel_size = float(getattr(model_cfg, "INIT_OCCUPANCY_VOXEL_SIZE", 0.08))
+        jitter_std = float(getattr(model_cfg, "INIT_OCCUPANCY_JITTER_STD_SCALE", 0.30)) * voxel_size
+        min_valid_points = int(getattr(model_cfg, "INIT_OCCUPANCY_MIN_VALID_POINTS", 5000))
+        min_frame_support = int(max(1, int(getattr(model_cfg, "INIT_OCCUPANCY_MIN_FRAME_SUPPORT", 2))))
+        sample_ratio = float(getattr(model_cfg, "INIT_OCCUPANCY_SAMPLE_RATIO", 0.20))
+        if not np.isfinite(sample_ratio) or sample_ratio <= 0.0 or sample_ratio > 1.0:
+            raise RuntimeError(f"INIT_OCCUPANCY_SAMPLE_RATIO must be in (0, 1], got {sample_ratio}")
+
+        occupancy_random_target = int(round(random_count * occupancy_ratio))
+        occupancy_random_target = int(np.clip(occupancy_random_target, 0, random_count))
+
+        try:
+            collected = self._collect_occupancy_points(model_cfg, data_info, init_context)
+            occupancy_points = collected["points"]
+            frame_ids = collected["frame_ids"]
+            raw_total_points = int(collected["raw_total_points"])
+            occupancy_info = self._build_supported_occupancy_voxel_centers(
+                points=occupancy_points,
+                frame_ids=frame_ids,
+                voxel_size=voxel_size,
+                min_frame_support=min_frame_support,
+            )
+            voxel_total_points = int(occupancy_info["voxel_total_points"])
+            supported_voxel_total = int(occupancy_info["supported_voxel_points"])
+            if voxel_total_points < min_valid_points:
+                raise RuntimeError(
+                    f"Occupancy voxel points ({voxel_total_points}) below INIT_OCCUPANCY_MIN_VALID_POINTS ({min_valid_points})"
+                )
+            if supported_voxel_total <= 0:
+                raise RuntimeError(
+                    f"No occupancy voxels reached INIT_OCCUPANCY_MIN_FRAME_SUPPORT ({min_frame_support})"
+                )
+
+            occupancy_cap = int(round(supported_voxel_total * sample_ratio))
+            if occupancy_random_target > 0:
+                occupancy_cap = max(1, occupancy_cap)
+            occupancy_random_used = int(min(occupancy_random_target, occupancy_cap, supported_voxel_total))
+            global_random_used = int(random_count - occupancy_random_used)
+
+            if occupancy_random_used > 0:
+                support_counts = occupancy_info["support_counts"].astype(np.float64)
+                probs = support_counts / max(support_counts.sum(), 1.0)
+                choice = np.random.choice(
+                    supported_voxel_total,
+                    size=occupancy_random_used,
+                    replace=False,
+                    p=probs,
+                )
+                occupancy_sampled = occupancy_info["centers"][choice].astype(np.float32)
+                if jitter_std > 0.0:
+                    noise = np.random.normal(
+                        loc=0.0,
+                        scale=jitter_std,
+                        size=occupancy_sampled.shape,
+                    ).astype(np.float32)
+                    noise = np.clip(noise, -0.5 * voxel_size, 0.5 * voxel_size)
+                    occupancy_sampled = occupancy_sampled + noise
+            else:
+                occupancy_sampled = np.zeros((0, 3), dtype=np.float32)
+
+            global_random_points = self._random_means_numpy(global_random_used)
+            random_points = np.concatenate([global_random_points, occupancy_sampled], axis=0)
+            return {
+                "points": random_points.astype(np.float32),
+                "occupancy_raw_points": raw_total_points,
+                "occupancy_voxel_points": voxel_total_points,
+                "occupancy_supported_voxel_points": supported_voxel_total,
+                "occupancy_used_frames": int(collected["used_frames"]),
+                "occupancy_dropped_frames": int(collected["dropped_frames"]),
+                "occupancy_random_target": occupancy_random_target,
+                "occupancy_random_used": occupancy_random_used,
+                "global_random_used": global_random_used,
+                "occupancy_stride": int(collected["stride"]),
+                "occupancy_voxel_size": voxel_size,
+                "occupancy_jitter_std": jitter_std,
+                "occupancy_min_frame_support": min_frame_support,
+                "occupancy_sample_ratio": sample_ratio,
+                "occupancy_fallback_to_global_random": False,
+                "warning": None,
+                "depth_root": collected["depth_root"],
+            }
+        except Exception as exc:
+            warning = str(exc)
+            random_points = self._random_means_numpy(random_count)
+            return {
+                "points": random_points.astype(np.float32),
+                "occupancy_raw_points": 0,
+                "occupancy_voxel_points": 0,
+                "occupancy_supported_voxel_points": 0,
+                "occupancy_used_frames": 0,
+                "occupancy_dropped_frames": 0,
+                "occupancy_random_target": occupancy_random_target,
+                "occupancy_random_used": 0,
+                "global_random_used": random_count,
+                "occupancy_stride": int(max(1, int(getattr(model_cfg, "INIT_OCCUPANCY_STRIDE", 8)))),
+                "occupancy_voxel_size": voxel_size,
+                "occupancy_jitter_std": jitter_std,
+                "occupancy_min_frame_support": min_frame_support,
+                "occupancy_sample_ratio": sample_ratio,
+                "occupancy_fallback_to_global_random": True,
+                "warning": warning,
+                "depth_root": None,
+            }
+
     def _collect_anchor_points(self, model_cfg, data_info, init_context):
         records = list(init_context.get("records", []))
         scene_root = init_context.get("scene_root", None)
@@ -577,6 +916,186 @@ class Simple3DGS(nn.Module):
         )
         return torch.from_numpy(means).float()
 
+
+    def _init_means_from_hybrid_anchor_colmap_sparse(self, model_cfg, data_info, init_context):
+        num_points = int(model_cfg.NUM_INIT_POINTS)
+        anchor_ratio = float(np.clip(getattr(model_cfg, "INIT_ANCHOR_RATIO", 0.1), 0.0, 1.0))
+        colmap_ratio = float(np.clip(getattr(model_cfg, "INIT_COLMAP_RATIO", 0.20), 0.0, 1.0))
+        anchor_target = int(round(num_points * anchor_ratio))
+        voxel_enabled = bool(getattr(model_cfg, "INIT_VOXEL_DOWNSAMPLE", True))
+        voxel_size = float(getattr(model_cfg, "INIT_VOXEL_SIZE", 0.03))
+        selection_mode = str(getattr(model_cfg, "INIT_ANCHOR_SELECTION", "quality_uniform")).lower()
+
+        anchor_data = self._collect_anchor_points(model_cfg, data_info, init_context)
+        anchor_points = anchor_data["points"]
+        frame_ids = anchor_data["frame_ids"]
+        quality = anchor_data["quality"]
+        raw_anchor_points = int(anchor_points.shape[0])
+
+        if selection_mode == "random":
+            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=None) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+        elif selection_mode == "quality_uniform":
+            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=quality) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+        else:
+            raise RuntimeError(f"Unsupported INIT_ANCHOR_SELECTION mode: {selection_mode}")
+
+        anchor_points = anchor_points[dedup_indices]
+        frame_ids = frame_ids[dedup_indices]
+        quality = quality[dedup_indices]
+        voxel_anchor_points = int(anchor_points.shape[0])
+
+        if selection_mode == "random":
+            anchor_count = min(anchor_target, voxel_anchor_points)
+            if anchor_count > 0:
+                selected_indices = np.random.choice(voxel_anchor_points, size=anchor_count, replace=False).astype(np.int64)
+            else:
+                selected_indices = np.zeros((0,), dtype=np.int64)
+        else:
+            selected_indices = self._select_quality_uniform_anchor_indices(
+                frame_ids=frame_ids,
+                quality=quality,
+                anchor_target=anchor_target,
+                frame_count=int(anchor_data["frame_count"]),
+            )
+            anchor_count = int(selected_indices.shape[0])
+
+        if anchor_count > 0:
+            sampled_anchor_points = anchor_points[selected_indices]
+            selected_quality = quality[selected_indices]
+            selected_frame_counts = np.bincount(frame_ids[selected_indices], minlength=int(anchor_data["frame_count"]))
+        else:
+            sampled_anchor_points = np.zeros((0, 3), dtype=np.float32)
+            selected_quality = np.zeros((0,), dtype=np.float32)
+            selected_frame_counts = np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+
+        remaining_capacity = max(0, num_points - anchor_count)
+        colmap_target = min(int(round(num_points * colmap_ratio)), remaining_capacity)
+        colmap_result = self._sample_colmap_sparse_points(model_cfg, init_context, colmap_target)
+        colmap_points = colmap_result["points"]
+        colmap_used = int(colmap_result["used_points"])
+
+        random_count = num_points - anchor_count - colmap_used
+        random_points = self._random_means(random_count).cpu().numpy().astype(np.float32)
+        means = np.concatenate([random_points, colmap_points, sampled_anchor_points], axis=0)
+        np.random.shuffle(means)
+        if means.shape[0] != num_points:
+            raise RuntimeError(
+                f"hybrid_anchor_colmap_sparse initialized {means.shape[0]} points, expected {num_points}"
+            )
+
+        valid_frame_counts = np.bincount(frame_ids, minlength=int(anchor_data["frame_count"])) if frame_ids.shape[0] > 0 else np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+        valid_anchor_frames = int(np.count_nonzero(valid_frame_counts))
+        selected_valid_counts = selected_frame_counts[valid_frame_counts > 0]
+        selected_frame_min = int(selected_valid_counts.min()) if selected_valid_counts.size > 0 else 0
+        selected_frame_median = float(np.median(selected_valid_counts)) if selected_valid_counts.size > 0 else 0.0
+        selected_frame_max = int(selected_valid_counts.max()) if selected_valid_counts.size > 0 else 0
+        quality_mean_all = float(quality.mean()) if quality.shape[0] > 0 else 0.0
+        quality_mean_selected = float(selected_quality.mean()) if selected_quality.shape[0] > 0 else 0.0
+
+        print(
+            "[Init] hybrid_anchor_colmap_sparse: "
+            f"depth_dir={anchor_data['depth_root']}, anchor_frames={anchor_data['anchor_frames']}, "
+            f"raw_anchor_points={raw_anchor_points}, voxel_anchor_points={voxel_anchor_points}, "
+            f"anchor_target={anchor_target}, anchor_used={anchor_count}, selection_mode={selection_mode}, "
+            f"valid_anchor_frames={valid_anchor_frames}, selected_frame_min={selected_frame_min}, "
+            f"selected_frame_median={selected_frame_median:.1f}, selected_frame_max={selected_frame_max}, "
+            f"quality_mean_selected={quality_mean_selected:.4f}, quality_mean_all={quality_mean_all:.4f}, "
+            f"colmap_dir={colmap_result['colmap_root']}, colmap_raw_points={colmap_result['raw_points']}, "
+            f"colmap_voxel_points={colmap_result['voxel_points']}, colmap_target={colmap_target}, "
+            f"colmap_used={colmap_used}, colmap_voxel_size={colmap_result['voxel_size']}, random_used={random_count}, "
+            f"voxel_enabled={voxel_enabled}, voxel_size={voxel_size}"
+        )
+        return torch.from_numpy(means).float()
+
+    def _init_means_from_hybrid_anchor_occupancy(self, model_cfg, data_info, init_context):
+        num_points = int(model_cfg.NUM_INIT_POINTS)
+        anchor_ratio = float(np.clip(getattr(model_cfg, "INIT_ANCHOR_RATIO", 0.1), 0.0, 1.0))
+        anchor_target = int(round(num_points * anchor_ratio))
+        voxel_enabled = bool(getattr(model_cfg, "INIT_VOXEL_DOWNSAMPLE", True))
+        voxel_size = float(getattr(model_cfg, "INIT_VOXEL_SIZE", 0.03))
+        selection_mode = str(getattr(model_cfg, "INIT_ANCHOR_SELECTION", "quality_uniform")).lower()
+
+        anchor_data = self._collect_anchor_points(model_cfg, data_info, init_context)
+        anchor_points = anchor_data["points"]
+        frame_ids = anchor_data["frame_ids"]
+        quality = anchor_data["quality"]
+        raw_anchor_points = int(anchor_points.shape[0])
+
+        if selection_mode == "random":
+            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=None) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+        elif selection_mode == "quality_uniform":
+            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=quality) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+        else:
+            raise RuntimeError(f"Unsupported INIT_ANCHOR_SELECTION mode: {selection_mode}")
+
+        anchor_points = anchor_points[dedup_indices]
+        frame_ids = frame_ids[dedup_indices]
+        quality = quality[dedup_indices]
+        voxel_anchor_points = int(anchor_points.shape[0])
+
+        if selection_mode == "random":
+            anchor_count = min(anchor_target, voxel_anchor_points)
+            if anchor_count > 0:
+                selected_indices = np.random.choice(voxel_anchor_points, size=anchor_count, replace=False).astype(np.int64)
+            else:
+                selected_indices = np.zeros((0,), dtype=np.int64)
+        else:
+            selected_indices = self._select_quality_uniform_anchor_indices(
+                frame_ids=frame_ids,
+                quality=quality,
+                anchor_target=anchor_target,
+                frame_count=int(anchor_data["frame_count"]),
+            )
+            anchor_count = int(selected_indices.shape[0])
+
+        if anchor_count > 0:
+            sampled_anchor_points = anchor_points[selected_indices]
+            selected_quality = quality[selected_indices]
+            selected_frame_counts = np.bincount(frame_ids[selected_indices], minlength=int(anchor_data["frame_count"]))
+        else:
+            sampled_anchor_points = np.zeros((0, 3), dtype=np.float32)
+            selected_quality = np.zeros((0,), dtype=np.float32)
+            selected_frame_counts = np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+
+        random_count = num_points - anchor_count
+        occupancy_result = self._sample_occupancy_random_points(model_cfg, data_info, init_context, random_count)
+        if occupancy_result["warning"] is not None:
+            print(f"[Init] hybrid_anchor_occupancy occupancy fallback: {occupancy_result['warning']}")
+        means = np.concatenate([occupancy_result["points"], sampled_anchor_points], axis=0)
+        np.random.shuffle(means)
+        if means.shape[0] != num_points:
+            raise RuntimeError(
+                f"hybrid_anchor_occupancy initialized {means.shape[0]} points, expected {num_points}"
+            )
+
+        valid_frame_counts = np.bincount(frame_ids, minlength=int(anchor_data["frame_count"])) if frame_ids.shape[0] > 0 else np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+        valid_anchor_frames = int(np.count_nonzero(valid_frame_counts))
+        selected_valid_counts = selected_frame_counts[valid_frame_counts > 0]
+        selected_frame_min = int(selected_valid_counts.min()) if selected_valid_counts.size > 0 else 0
+        selected_frame_median = float(np.median(selected_valid_counts)) if selected_valid_counts.size > 0 else 0.0
+        selected_frame_max = int(selected_valid_counts.max()) if selected_valid_counts.size > 0 else 0
+        quality_mean_all = float(quality.mean()) if quality.shape[0] > 0 else 0.0
+        quality_mean_selected = float(selected_quality.mean()) if selected_quality.shape[0] > 0 else 0.0
+
+        print(
+            "[Init] hybrid_anchor_occupancy: "
+            f"depth_dir={anchor_data['depth_root']}, anchor_frames={anchor_data['anchor_frames']}, "
+            f"raw_anchor_points={raw_anchor_points}, voxel_anchor_points={voxel_anchor_points}, "
+            f"anchor_target={anchor_target}, anchor_used={anchor_count}, random_used={random_count}, "
+            f"selection_mode={selection_mode}, valid_anchor_frames={valid_anchor_frames}, "
+            f"selected_frame_min={selected_frame_min}, selected_frame_median={selected_frame_median:.1f}, "
+            f"selected_frame_max={selected_frame_max}, quality_mean_selected={quality_mean_selected:.4f}, "
+            f"quality_mean_all={quality_mean_all:.4f}, occupancy_raw_points={occupancy_result['occupancy_raw_points']}, "
+            f"occupancy_voxel_points={occupancy_result['occupancy_voxel_points']}, occupancy_supported_voxel_points={occupancy_result['occupancy_supported_voxel_points']}, "
+            f"occupancy_used_frames={occupancy_result['occupancy_used_frames']}, occupancy_dropped_frames={occupancy_result['occupancy_dropped_frames']}, "
+            f"occupancy_random_target={occupancy_result['occupancy_random_target']}, occupancy_random_used={occupancy_result['occupancy_random_used']}, "
+            f"global_random_used={occupancy_result['global_random_used']}, occupancy_stride={occupancy_result['occupancy_stride']}, "
+            f"occupancy_voxel_size={occupancy_result['occupancy_voxel_size']}, occupancy_jitter_std={occupancy_result['occupancy_jitter_std']:.4f}, "
+            f"occupancy_min_frame_support={occupancy_result['occupancy_min_frame_support']}, occupancy_sample_ratio={occupancy_result['occupancy_sample_ratio']:.2f}, "
+            f"occupancy_fallback_to_global_random={occupancy_result['occupancy_fallback_to_global_random']}"
+        )
+        return torch.from_numpy(means).float()
+
     def _build_camera(self, camtoworld):
         device = self.splats["means"].device
         c2w = torch.eye(4, device=device, dtype=torch.float32)
@@ -677,5 +1196,7 @@ class Simple3DGS(nn.Module):
             "alphas": alphas,
             "info": info,
         }
+
+
 
 

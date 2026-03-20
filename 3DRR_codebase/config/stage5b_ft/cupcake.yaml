@@ -1,4 +1,4 @@
-DATASET:
+﻿DATASET:
   NAME: 'Cupcake'
   DATA_PATH: 'dataset/Development/lowlight_development/development/Cupcake'
   BACKGROUND_COLOR: 255.0
@@ -39,7 +39,7 @@ MODEL:
   LR_OPACITIES: 2.5e-2
   LR_SH0: 2.5e-3
   LR_SHN: 1.25e-4
-  WARMSTART_CHECKPOINT: 'outputs/stage4_tuned/Cupcake/step_15000/step_15000.pt'
+  WARMSTART_CHECKPOINT: 'outputs/stage4_tuned_colmap/Cupcake/step_15000/step_15000.pt'
   DENSIFY_START_STEP: 6000
   DENSIFY_STOP_STEP: 6000
   DENSIFY_INTERVAL: 200
@@ -81,3 +81,4 @@ PRIORS:
 
 EXPERIMENT:
   STAGE: 'stage5b_ft'
+

@@ -1,4 +1,4 @@
-DATASET:
+﻿DATASET:
   NAME: 'GearWorks'
   DATA_PATH: 'dataset/Development/lowlight_development/development/GearWorks'
   BACKGROUND_COLOR: 255.0
@@ -99,3 +99,4 @@ PROXY_TARGET:
   SHADOW_POWER: 1.5
   SHADOW_SOURCE: 'supervision_like'
   SHADOW_WEIGHT_BLUR_KERNEL: 11
+

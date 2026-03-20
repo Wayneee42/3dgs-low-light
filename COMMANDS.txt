@@ -1,4 +1,4 @@
-python tools/extract_marigold_depth.py dataset/Validation/lowlight_validation/validation/BlueHawaii --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
+﻿python tools/extract_marigold_depth.py dataset/Validation/lowlight_validation/validation/BlueHawaii --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Validation/lowlight_validation/validation/BlueHawaii --device cuda --skip-existing
 
 python train.py -c config/stage4_tuned/bluehawaii.yaml
@@ -13,75 +13,87 @@ python eval.py -w outputs/stage6_shadow_ft_v2/BlueHawaii/step_3000/step_3000.pt
 python eval.py -w outputs/stage6_shadow_ft_v2/BlueHawaii/step_5000/step_5000.pt
 
 
-Development场景：
+Development鍦烘櫙锛?
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Chocolate --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Chocolate --device cuda --skip-existing
-
-python train.py -c config/stage4_tuned/chocolate.yaml
-python eval.py -w outputs/stage4_tuned/Chocolate/step_15000/step_15000.pt
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Development/lowlight_development/development/Chocolate --config-path config/stage4_tuned_colmap/chocolate.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/chocolate.yaml
+python eval.py -w outputs/stage4_tuned_colmap/Chocolate/step_15000/step_15000.pt
 python train.py -c config/stage5b_ft/chocolate.yaml
-python eval.py -w outputs/stage5b_ft/Chocolate/step_2000/step_2000.pt
-python eval.py -w outputs/stage5b_ft/Chocolate/step_3000/step_3000.pt
 python eval.py -w outputs/stage5b_ft/Chocolate/step_5000/step_5000.pt
 python train.py -c config/stage6_shadow_ft_v2/chocolate.yaml
-python eval.py -w outputs/stage6_shadow_ft_v2/Chocolate/step_2000/step_2000.pt
-python eval.py -w outputs/stage6_shadow_ft_v2/Chocolate/step_3000/step_3000.pt
 python eval.py -w outputs/stage6_shadow_ft_v2/Chocolate/step_5000/step_5000.pt
 
 
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Cupcake --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Cupcake --device cuda --skip-existing
-
-python train.py -c config/stage4_tuned/cupcake.yaml
-python eval.py -w outputs/stage4_tuned/Cupcake/step_15000/step_15000.pt
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Development/lowlight_development/development/Cupcake --config-path config/stage4_tuned_colmap/cupcake.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/cupcake.yaml
+python eval.py -w outputs/stage4_tuned_colmap/Cupcake/step_15000/step_15000.pt
 python train.py -c config/stage5b_ft/cupcake.yaml
-python eval.py -w outputs/stage5b_ft/Cupcake/step_2000/step_2000.pt
-python eval.py -w outputs/stage5b_ft/Cupcake/step_3000/step_3000.pt
 python eval.py -w outputs/stage5b_ft/Cupcake/step_5000/step_5000.pt
 python train.py -c config/stage6_shadow_ft_v2/cupcake.yaml
-python eval.py -w outputs/stage6_shadow_ft_v2/Cupcake/step_2000/step_2000.pt
-python eval.py -w outputs/stage6_shadow_ft_v2/Cupcake/step_3000/step_3000.pt
 python eval.py -w outputs/stage6_shadow_ft_v2/Cupcake/step_5000/step_5000.pt
 
 
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/GearWorks --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/GearWorks --device cuda --skip-existing
-
-python train.py -c config/stage4_tuned/gearworks.yaml
-python eval.py -w outputs/stage4_tuned/GearWorks/step_15000/step_15000.pt
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Development/lowlight_development/development/GearWorks --config-path config/stage4_tuned_colmap/gearworks.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/gearworks.yaml
+python eval.py -w outputs/stage4_tuned_colmap/GearWorks/step_15000/step_15000.pt
 python train.py -c config/stage5b_ft/gearworks.yaml
-python eval.py -w outputs/stage5b_ft/GearWorks/step_2000/step_2000.pt
-python eval.py -w outputs/stage5b_ft/GearWorks/step_3000/step_3000.pt
 python eval.py -w outputs/stage5b_ft/GearWorks/step_5000/step_5000.pt
 python train.py -c config/stage6_shadow_ft_v2/gearworks.yaml
-python eval.py -w outputs/stage6_shadow_ft_v2/GearWorks/step_2000/step_2000.pt
-python eval.py -w outputs/stage6_shadow_ft_v2/GearWorks/step_3000/step_3000.pt
 python eval.py -w outputs/stage6_shadow_ft_v2/GearWorks/step_5000/step_5000.pt
 
 
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Laboratory --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Laboratory --device cuda --skip-existing
-
-python train.py -c config/stage4_tuned/laboratory.yaml
-python eval.py -w outputs/stage4_tuned/Laboratory/step_15000/step_15000.pt
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Development/lowlight_development/development/Laboratory --config-path config/stage4_tuned_colmap/laboratory.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/laboratory.yaml
+python eval.py -w outputs/stage4_tuned_colmap/Laboratory/step_15000/step_15000.pt
 python train.py -c config/stage5b_ft/laboratory.yaml
-python eval.py -w outputs/stage5b_ft/Laboratory/step_2000/step_2000.pt
-python eval.py -w outputs/stage5b_ft/Laboratory/step_3000/step_3000.pt
 python eval.py -w outputs/stage5b_ft/Laboratory/step_5000/step_5000.pt
 python train.py -c config/stage6_shadow_ft_v2/laboratory.yaml
-python eval.py -w outputs/stage6_shadow_ft_v2/Laboratory/step_2000/step_2000.pt
-python eval.py -w outputs/stage6_shadow_ft_v2/Laboratory/step_3000/step_3000.pt
 python eval.py -w outputs/stage6_shadow_ft_v2/Laboratory/step_5000/step_5000.pt
+
+
 
 python tools/extract_marigold_depth.py dataset/Test/lowlight_test/test/MilkCookie --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Test/lowlight_test/test/MilkCookie --device cuda --skip-existing
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Test/lowlight_test/test/MilkCookie --config-path config/stage4_tuned_colmap/milkcookie.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/milkcookie.yaml
+python eval.py -w outputs/stage4_tuned_colmap/MilkCookie/step_15000/step_15000.pt
+python train.py -c config/stage5b_ft/milkcookie.yaml
+python eval.py -w outputs/stage5b_ft/MilkCookie/step_5000/step_5000.pt
+python train.py -c config/stage6_shadow_ft_v2/milkcookie.yaml
+python eval.py -w outputs/stage6_shadow_ft_v2/MilkCookie/step_5000/step_5000.pt
+
+
 
 python tools/extract_marigold_depth.py dataset/Test/lowlight_test/test/Popcorn --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Test/lowlight_test/test/Popcorn --device cuda --skip-existing
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Test/lowlight_test/test/Popcorn --config-path config/stage4_tuned_colmap/popcorn.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/popcorn.yaml
+python eval.py -w outputs/stage4_tuned_colmap/Popcorn/step_15000/step_15000.pt
+python train.py -c config/stage5b_ft/popcorn.yaml
+python eval.py -w outputs/stage5b_ft/Popcorn/step_5000/step_5000.pt
+python train.py -c config/stage6_shadow_ft_v2/popcorn.yaml
+python eval.py -w outputs/stage6_shadow_ft_v2/Popcorn/step_5000/step_5000.pt
+
+
 
 python tools/extract_marigold_depth.py dataset/Test/lowlight_test/test/Ujikintoki --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Test/lowlight_test/test/Ujikintoki --device cuda --skip-existing
+python tools/build_fixed_pose_colmap_sparse_init.py dataset/Test/lowlight_test/test/Ujikintoki --config-path config/stage4_tuned_colmap/ujikintoki.yaml --colmap-bin colmap --overwrite
+python train.py -c config/stage4_tuned_colmap/ujikintoki.yaml
+python eval.py -w outputs/stage4_tuned_colmap/Ujikintoki/step_15000/step_15000.pt
+python train.py -c config/stage5b_ft/ujikintoki.yaml
+python eval.py -w outputs/stage5b_ft/Ujikintoki/step_5000/step_5000.pt
+python train.py -c config/stage6_shadow_ft_v2/ujikintoki.yaml
+python eval.py -w outputs/stage6_shadow_ft_v2/Ujikintoki/step_5000/step_5000.pt
+
