@@ -18,7 +18,11 @@ from tqdm import tqdm
 from core.data import Blender
 from core.libs import ConfigDict
 from core.libs.augment import prepare_low_light_batch
-from core.losses import build_loss_modules, compute_loss_modules, required_aux_heads
+from core.losses import (
+    build_loss_modules,
+    compute_loss_modules,
+    required_aux_heads,
+)
 from core.model import Simple3DGS
 
 
@@ -64,6 +68,17 @@ def build_output_dir(config_path, meta_cfg):
     stage_name = infer_stage_name(config_path, meta_cfg)
     scene_name = str(meta_cfg.DATASET.NAME)
     return os.path.join("outputs", stage_name, scene_name)
+
+
+def rgb_chw_to_gray(image_tensor):
+    if image_tensor is None:
+        return None
+    return 0.299 * image_tensor[0] + 0.587 * image_tensor[1] + 0.114 * image_tensor[2]
+
+
+def is_multiview_active(loss_modules, step):
+    context = {"step": int(step)}
+    return any(module.name == "multiview_reproj" and module.is_active(context) for module in loss_modules)
 
 
 
@@ -196,6 +211,7 @@ def train(config_path, device="cuda"):
     os.makedirs(output_dir, exist_ok=True)
     save_config(os.path.join(output_dir, "config.yaml"), meta_cfg)
 
+    multiview_cfg = _cfg_get(_cfg_get(meta_cfg, "PRIORS", None), "MULTIVIEW", None)
     train_dataset = Blender(meta_cfg.DATASET, split="train")
     val_dataset = Blender(meta_cfg.DATASET, split="val", load_images=False)
     num_train = len(train_dataset._records_keys)
@@ -253,6 +269,15 @@ def train(config_path, device="cuda"):
         reset_every=cfg.OPACITY_RESET_INTERVAL,
     )
     strategy_state = strategy.initialize_state(scene_scale=cfg.SCENE_SCALE)
+    intrinsics = torch.tensor(
+        [
+            [float(train_dataset._data_info["fl_x"]), 0.0, float(train_dataset._data_info["cx"])],
+            [0.0, float(train_dataset._data_info["fl_y"]), float(train_dataset._data_info["cy"])],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
 
     train_aug_images = []
     train_proxy_images = []
@@ -275,8 +300,22 @@ def train(config_path, device="cuda"):
 
         camtoworld = data["transforms"].to(device)
         H, W = supervision_image.shape[1], supervision_image.shape[2]
-        render_outputs = model(camtoworld, H, W, render_heads=aux_heads)
+        multiview_active = is_multiview_active(loss_modules, current_step)
+        render_outputs = model(camtoworld, H, W, render_heads=aux_heads, render_geom_depth=multiview_active)
         rendered = render_outputs["recon_rgb"]
+
+        neighbor_record = train_dataset.get_pose_neighbor(data["infos"]["frame_key"]) if multiview_active else None
+        neighbor_outputs = None
+        neighbor_camtoworld = None
+        neighbor_distance = 0.0
+        if neighbor_record is not None:
+            neighbor_camtoworld = neighbor_record["transform_matrix"].to(device)
+            neighbor_outputs = model(neighbor_camtoworld, H, W, render_heads=(), render_geom_depth=True, render_rgb=False)
+            neighbor_distance = float(
+                torch.norm(
+                    data["transforms"][:3, 3].to(dtype=torch.float32) - neighbor_record["transform_matrix"][:3, 3].to(dtype=torch.float32)
+                ).item()
+            )
 
         context = {
             "step": current_step,
@@ -284,6 +323,8 @@ def train(config_path, device="cuda"):
             "rgb_base_hwc": render_outputs["rgb"],
             "recon_hwc": render_outputs["recon_rgb"],
             "depth_aux": render_outputs["depth_aux"],
+            "geom_depth": render_outputs["geom_depth"],
+            "alphas": render_outputs["alphas"],
             "prior_aux": render_outputs["prior_aux"],
             "illum_aux": render_outputs["illum_aux"],
             "supervision_hwc": supervision_image.permute(1, 2, 0),
@@ -293,6 +334,11 @@ def train(config_path, device="cuda"):
             "target_mean": train_batch["target_mean"],
             "data": data,
             "batch": train_batch,
+            "camtoworld": camtoworld,
+            "neighbor_camtoworld": neighbor_camtoworld,
+            "neighbor_geom_depth": None if neighbor_outputs is None else neighbor_outputs["geom_depth"],
+            "neighbor_alphas": None if neighbor_outputs is None else neighbor_outputs["alphas"],
+            "intrinsics": intrinsics,
             "depth": data["depth"].to(device) if data["depth"] is not None else None,
             "structure": data["structure"].to(device) if data["structure"] is not None else None,
         }
@@ -307,6 +353,7 @@ def train(config_path, device="cuda"):
         loss_logs["proxy_blend_mean"] = float(train_batch["proxy_blend_mean"])
         loss_logs["proxy_shadow_weight_mean"] = float(train_batch["proxy_shadow_weight_mean"])
         loss_logs["low_mean"] = float(train_batch["low_mean"])
+        loss_logs["neighbor_distance"] = float(neighbor_distance)
 
         strategy.step_pre_backward(model.splats, optimizers, strategy_state, step, render_outputs["info"])
         loss.backward()
@@ -332,26 +379,26 @@ def train(config_path, device="cuda"):
                     psnr_recon = psnr_base
             postfix = {
                 "loss": f"{loss_logs['total']:.4f}",
-                "rgb": f"{loss_logs.get('rgb', 0.0):.4f}",
-                "rgb_b": f"{loss_logs.get('rgb_base', 0.0):.4f}",
-                "rec": f"{loss_logs.get('reconstruction', 0.0):.4f}",
-                "rec_a": f"{loss_logs.get('reconstruction_active', 0.0):.0f}",
-                "dep": f"{loss_logs.get('depth_prior', 0.0):.4f}",
-                "st": f"{loss_logs.get('structure_prior', 0.0):.4f}",
-                "proxy_g": f"{loss_logs.get('proxy_gain', 0.0):.2f}",
-                "proxy_sw": f"{loss_logs.get('proxy_shadow_weight_mean', 0.0):.3f}",
                 "n_gs": model.num_gaussians,
-                "psnr_b": f"{psnr_base:.2f}",
             }
             if has_reconstruction:
+                postfix["rgb_b"] = f"{loss_logs.get('rgb_base', 0.0):.4f}"
+                postfix["rec"] = f"{loss_logs.get('reconstruction', 0.0):.4f}"
+                postfix["psnr_b"] = f"{psnr_base:.2f}"
                 postfix["psnr_r"] = f"{psnr_recon:.2f}"
-                postfix.pop("rgb", None)
             else:
-                postfix.pop("rgb_b", None)
-                postfix.pop("rec", None)
-                postfix.pop("rec_a", None)
-                postfix.pop("proxy_sw", None)
+                postfix["rgb"] = f"{loss_logs.get('rgb', 0.0):.4f}"
                 postfix["psnr"] = f"{psnr_base:.2f}"
+
+            if loss_logs.get("depth_prior_weight", 0.0) > 0.0:
+                postfix["dep"] = f"{loss_logs.get('depth_prior', 0.0):.4f}"
+                postfix["dep_w"] = f"{loss_logs.get('depth_prior_weight', 0.0):.3f}"
+            if loss_logs.get("multiview_reproj_weight", 0.0) > 0.0:
+                postfix["mv"] = f"{loss_logs.get('multiview_reproj', 0.0):.4f}"
+                postfix["mv_w"] = f"{loss_logs.get('multiview_reproj_weight', 0.0):.3f}"
+                postfix["mv_v"] = f"{loss_logs.get('multiview_reproj_valid_ratio', 0.0):.2f}"
+            if loss_logs.get("structure_prior", 0.0) > 0.0:
+                postfix["st"] = f"{loss_logs.get('structure_prior', 0.0):.4f}"
             pbar.set_postfix(**postfix)
 
         if train_aug_images is not None:

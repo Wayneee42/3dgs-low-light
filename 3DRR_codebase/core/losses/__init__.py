@@ -25,4 +25,16 @@ def requires_depth_render(*args, **kwargs):
     return _requires_depth_render(*args, **kwargs)
 
 
-__all__ = ["build_loss_modules", "compute_loss_modules", "required_aux_heads", "requires_depth_render"]
+def requires_geom_depth_render(*args, **kwargs):
+    from .builder import requires_geom_depth_render as _requires_geom_depth_render
+
+    return _requires_geom_depth_render(*args, **kwargs)
+
+
+__all__ = [
+    "build_loss_modules",
+    "compute_loss_modules",
+    "required_aux_heads",
+    "requires_depth_render",
+    "requires_geom_depth_render",
+]

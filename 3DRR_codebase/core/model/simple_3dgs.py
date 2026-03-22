@@ -25,7 +25,7 @@ class Simple3DGS(nn.Module):
         self.sh_degree_max = model_cfg.SH_DEGREE
         self.sh_degree = 0
 
-        num_points = model_cfg.NUM_INIT_POINTS
+        configured_num_points = int(model_cfg.NUM_INIT_POINTS)
         num_sh_bases = (self.sh_degree_max + 1) ** 2
 
         init_mode = str(getattr(model_cfg, "INIT_MODE", "random")).lower()
@@ -39,9 +39,16 @@ class Simple3DGS(nn.Module):
             means = self._init_means_from_hybrid_anchor_colmap_sparse(model_cfg, data_info, init_context)
         elif init_mode in {"depth_backproject", "hybrid_anchor", "hybrid_anchor_occupancy", "hybrid_anchor_colmap_sparse"} and init_context is None:
             print(f"[Init] {init_mode} requested but no init_context provided; fallback to random means.")
-            means = self._random_means(num_points)
+            means = self._random_means(configured_num_points)
         else:
-            means = self._random_means(num_points)
+            means = self._random_means(configured_num_points)
+
+        num_points = int(means.shape[0])
+        if num_points != configured_num_points:
+            print(
+                f"[Init] actual gaussian count differs from MODEL.NUM_INIT_POINTS: "
+                f"configured={configured_num_points}, actual={num_points}"
+            )
 
         quats = torch.zeros(num_points, 4)
         quats[:, 0] = 1.0
@@ -922,68 +929,100 @@ class Simple3DGS(nn.Module):
         anchor_ratio = float(np.clip(getattr(model_cfg, "INIT_ANCHOR_RATIO", 0.1), 0.0, 1.0))
         colmap_ratio = float(np.clip(getattr(model_cfg, "INIT_COLMAP_RATIO", 0.20), 0.0, 1.0))
         anchor_target = int(round(num_points * anchor_ratio))
+        colmap_use_all = bool(getattr(model_cfg, "INIT_COLMAP_USE_ALL", False))
+        fixed_random_points = int(max(0, int(getattr(model_cfg, "INIT_RANDOM_POINTS", -1))))
         voxel_enabled = bool(getattr(model_cfg, "INIT_VOXEL_DOWNSAMPLE", True))
         voxel_size = float(getattr(model_cfg, "INIT_VOXEL_SIZE", 0.03))
         selection_mode = str(getattr(model_cfg, "INIT_ANCHOR_SELECTION", "quality_uniform")).lower()
 
-        anchor_data = self._collect_anchor_points(model_cfg, data_info, init_context)
-        anchor_points = anchor_data["points"]
-        frame_ids = anchor_data["frame_ids"]
-        quality = anchor_data["quality"]
-        raw_anchor_points = int(anchor_points.shape[0])
+        if anchor_target > 0:
+            anchor_data = self._collect_anchor_points(model_cfg, data_info, init_context)
+            anchor_points = anchor_data["points"]
+            frame_ids = anchor_data["frame_ids"]
+            quality = anchor_data["quality"]
+            raw_anchor_points = int(anchor_points.shape[0])
 
-        if selection_mode == "random":
-            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=None) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
-        elif selection_mode == "quality_uniform":
-            dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=quality) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
-        else:
-            raise RuntimeError(f"Unsupported INIT_ANCHOR_SELECTION mode: {selection_mode}")
-
-        anchor_points = anchor_points[dedup_indices]
-        frame_ids = frame_ids[dedup_indices]
-        quality = quality[dedup_indices]
-        voxel_anchor_points = int(anchor_points.shape[0])
-
-        if selection_mode == "random":
-            anchor_count = min(anchor_target, voxel_anchor_points)
-            if anchor_count > 0:
-                selected_indices = np.random.choice(voxel_anchor_points, size=anchor_count, replace=False).astype(np.int64)
+            if selection_mode == "random":
+                dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=None) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
+            elif selection_mode == "quality_uniform":
+                dedup_indices = self._select_voxel_indices(anchor_points, voxel_size, quality=quality) if voxel_enabled else np.arange(raw_anchor_points, dtype=np.int64)
             else:
-                selected_indices = np.zeros((0,), dtype=np.int64)
-        else:
-            selected_indices = self._select_quality_uniform_anchor_indices(
-                frame_ids=frame_ids,
-                quality=quality,
-                anchor_target=anchor_target,
-                frame_count=int(anchor_data["frame_count"]),
-            )
-            anchor_count = int(selected_indices.shape[0])
+                raise RuntimeError(f"Unsupported INIT_ANCHOR_SELECTION mode: {selection_mode}")
 
-        if anchor_count > 0:
-            sampled_anchor_points = anchor_points[selected_indices]
-            selected_quality = quality[selected_indices]
-            selected_frame_counts = np.bincount(frame_ids[selected_indices], minlength=int(anchor_data["frame_count"]))
+            anchor_points = anchor_points[dedup_indices]
+            frame_ids = frame_ids[dedup_indices]
+            quality = quality[dedup_indices]
+            voxel_anchor_points = int(anchor_points.shape[0])
+
+            if selection_mode == "random":
+                anchor_count = min(anchor_target, voxel_anchor_points)
+                if anchor_count > 0:
+                    selected_indices = np.random.choice(voxel_anchor_points, size=anchor_count, replace=False).astype(np.int64)
+                else:
+                    selected_indices = np.zeros((0,), dtype=np.int64)
+            else:
+                selected_indices = self._select_quality_uniform_anchor_indices(
+                    frame_ids=frame_ids,
+                    quality=quality,
+                    anchor_target=anchor_target,
+                    frame_count=int(anchor_data["frame_count"]),
+                )
+                anchor_count = int(selected_indices.shape[0])
+
+            if anchor_count > 0:
+                sampled_anchor_points = anchor_points[selected_indices]
+                selected_quality = quality[selected_indices]
+                selected_frame_counts = np.bincount(frame_ids[selected_indices], minlength=int(anchor_data["frame_count"]))
+            else:
+                sampled_anchor_points = np.zeros((0, 3), dtype=np.float32)
+                selected_quality = np.zeros((0,), dtype=np.float32)
+                selected_frame_counts = np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
         else:
+            anchor_data = None
             sampled_anchor_points = np.zeros((0, 3), dtype=np.float32)
             selected_quality = np.zeros((0,), dtype=np.float32)
-            selected_frame_counts = np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+            selected_frame_counts = np.zeros((0,), dtype=np.int64)
+            frame_ids = np.zeros((0,), dtype=np.int32)
+            quality = np.zeros((0,), dtype=np.float32)
+            raw_anchor_points = 0
+            voxel_anchor_points = 0
+            anchor_count = 0
 
-        remaining_capacity = max(0, num_points - anchor_count)
-        colmap_target = min(int(round(num_points * colmap_ratio)), remaining_capacity)
-        colmap_result = self._sample_colmap_sparse_points(model_cfg, init_context, colmap_target)
-        colmap_points = colmap_result["points"]
-        colmap_used = int(colmap_result["used_points"])
+        if colmap_use_all:
+            colmap_data = self._load_colmap_sparse_points(model_cfg, init_context)
+            colmap_points = colmap_data["points"].astype(np.float32)
+            colmap_used = int(colmap_points.shape[0])
+            colmap_target = colmap_used
+            colmap_result = {
+                "points": colmap_points,
+                "raw_points": int(colmap_data["raw_points"]),
+                "voxel_points": int(colmap_data["voxel_points"]),
+                "used_points": colmap_used,
+                "colmap_root": colmap_data["colmap_root"],
+                "points_path": colmap_data["points_path"],
+                "voxel_size": float(colmap_data["voxel_size"]),
+            }
+        else:
+            remaining_capacity = max(0, num_points - anchor_count)
+            colmap_target = min(int(round(num_points * colmap_ratio)), remaining_capacity)
+            colmap_result = self._sample_colmap_sparse_points(model_cfg, init_context, colmap_target)
+            colmap_points = colmap_result["points"]
+            colmap_used = int(colmap_result["used_points"])
 
-        random_count = num_points - anchor_count - colmap_used
+        if fixed_random_points >= 0:
+            random_count = fixed_random_points
+        else:
+            random_count = num_points - anchor_count - colmap_used
         random_points = self._random_means(random_count).cpu().numpy().astype(np.float32)
         means = np.concatenate([random_points, colmap_points, sampled_anchor_points], axis=0)
         np.random.shuffle(means)
-        if means.shape[0] != num_points:
+        if fixed_random_points < 0 and not colmap_use_all and means.shape[0] != num_points:
             raise RuntimeError(
                 f"hybrid_anchor_colmap_sparse initialized {means.shape[0]} points, expected {num_points}"
             )
 
-        valid_frame_counts = np.bincount(frame_ids, minlength=int(anchor_data["frame_count"])) if frame_ids.shape[0] > 0 else np.zeros((int(anchor_data["frame_count"]),), dtype=np.int64)
+        frame_count = int(anchor_data["frame_count"]) if anchor_data is not None else 0
+        valid_frame_counts = np.bincount(frame_ids, minlength=frame_count) if frame_ids.shape[0] > 0 else np.zeros((frame_count,), dtype=np.int64)
         valid_anchor_frames = int(np.count_nonzero(valid_frame_counts))
         selected_valid_counts = selected_frame_counts[valid_frame_counts > 0]
         selected_frame_min = int(selected_valid_counts.min()) if selected_valid_counts.size > 0 else 0
@@ -994,7 +1033,8 @@ class Simple3DGS(nn.Module):
 
         print(
             "[Init] hybrid_anchor_colmap_sparse: "
-            f"depth_dir={anchor_data['depth_root']}, anchor_frames={anchor_data['anchor_frames']}, "
+            f"depth_dir={None if anchor_data is None else anchor_data['depth_root']}, "
+            f"anchor_frames={0 if anchor_data is None else anchor_data['anchor_frames']}, "
             f"raw_anchor_points={raw_anchor_points}, voxel_anchor_points={voxel_anchor_points}, "
             f"anchor_target={anchor_target}, anchor_used={anchor_count}, selection_mode={selection_mode}, "
             f"valid_anchor_frames={valid_anchor_frames}, selected_frame_min={selected_frame_min}, "
@@ -1003,7 +1043,8 @@ class Simple3DGS(nn.Module):
             f"colmap_dir={colmap_result['colmap_root']}, colmap_raw_points={colmap_result['raw_points']}, "
             f"colmap_voxel_points={colmap_result['voxel_points']}, colmap_target={colmap_target}, "
             f"colmap_used={colmap_used}, colmap_voxel_size={colmap_result['voxel_size']}, random_used={random_count}, "
-            f"voxel_enabled={voxel_enabled}, voxel_size={voxel_size}"
+            f"voxel_enabled={voxel_enabled}, voxel_size={voxel_size}, "
+            f"colmap_use_all={colmap_use_all}, total_used={means.shape[0]}"
         )
         return torch.from_numpy(means).float()
 
@@ -1116,7 +1157,7 @@ class Simple3DGS(nn.Module):
         )[None]
         return viewmat, intrinsics
 
-    def _rasterize(self, colors, viewmats, intrinsics, img_h, img_w, backgrounds, sh_degree):
+    def _rasterize(self, colors, viewmats, intrinsics, img_h, img_w, backgrounds, sh_degree, render_mode="RGB"):
         return rasterization(
             means=self.splats["means"],
             quats=self.splats["quats"],
@@ -1129,7 +1170,7 @@ class Simple3DGS(nn.Module):
             height=img_h,
             sh_degree=sh_degree,
             backgrounds=backgrounds,
-            render_mode="RGB",
+            render_mode=render_mode,
             packed=False,
         )
 
@@ -1146,8 +1187,26 @@ class Simple3DGS(nn.Module):
             img_w=img_w,
             backgrounds=backgrounds,
             sh_degree=self.sh_degree,
+            render_mode="RGB",
         )
         return renders[0], alphas[0], info
+
+    def render_geom_depth(self, camtoworld, img_h, img_w):
+        device = self.splats["means"].device
+        viewmats, intrinsics = self._build_camera(camtoworld)
+        dummy_colors = torch.zeros((self.num_gaussians, 3), dtype=torch.float32, device=device)
+        backgrounds = torch.zeros((1, 1), dtype=torch.float32, device=device)
+        renders, alphas, _ = self._rasterize(
+            colors=dummy_colors,
+            viewmats=viewmats,
+            intrinsics=intrinsics,
+            img_h=img_h,
+            img_w=img_w,
+            backgrounds=backgrounds,
+            sh_degree=None,
+            render_mode="ED",
+        )
+        return renders[0], alphas[0]
 
     def render_aux_heads(self, camtoworld, img_h, img_w, heads):
         device = self.splats["means"].device
@@ -1174,15 +1233,25 @@ class Simple3DGS(nn.Module):
                 img_w=img_w,
                 backgrounds=backgrounds,
                 sh_degree=None,
+                render_mode="RGB",
             )
             outputs[head] = renders[0].mean(dim=-1, keepdim=True)
         return outputs
 
-    def forward(self, camtoworld, img_h, img_w, render_heads=()):
-        rgb, alphas, info = self.render_rgb(camtoworld, img_h, img_w)
+    def forward(self, camtoworld, img_h, img_w, render_heads=(), render_geom_depth=False, render_rgb=True):
+        rgb = None
+        alphas = None
+        info = {}
+        if render_rgb:
+            rgb, alphas, info = self.render_rgb(camtoworld, img_h, img_w)
         head_outputs = self.render_aux_heads(camtoworld, img_h, img_w, render_heads) if render_heads else {}
+        geom_depth = None
+        if render_geom_depth:
+            geom_depth, geom_alphas = self.render_geom_depth(camtoworld, img_h, img_w)
+            if alphas is None:
+                alphas = geom_alphas
         illum_aux = head_outputs.get("illum")
-        if illum_aux is not None:
+        if illum_aux is not None and rgb is not None:
             illum_factor = 2.0 * torch.sigmoid(illum_aux)
             recon_rgb = torch.clamp(rgb * illum_factor, 0.0, 1.0)
         else:
@@ -1190,6 +1259,7 @@ class Simple3DGS(nn.Module):
         return {
             "rgb": rgb,
             "depth_aux": head_outputs.get("depth"),
+            "geom_depth": geom_depth,
             "prior_aux": head_outputs.get("prior"),
             "illum_aux": illum_aux,
             "recon_rgb": recon_rgb,

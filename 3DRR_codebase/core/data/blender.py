@@ -18,8 +18,21 @@ def build_frame_key(file_path):
     return f"{split_name}_{Path(file_name).stem}"
 
 
+def camera_center_from_c2w(transform_matrix):
+    c2w = torch.eye(4, dtype=transform_matrix.dtype)
+    c2w[:3, :] = transform_matrix
+    return c2w[:3, 3].clone()
+
+
+def camera_forward_from_c2w(transform_matrix):
+    c2w = torch.eye(4, dtype=transform_matrix.dtype)
+    c2w[:3, :] = transform_matrix
+    forward = c2w[:3, :3] @ torch.tensor([0.0, 0.0, -1.0], dtype=transform_matrix.dtype)
+    return torch.nn.functional.normalize(forward, dim=0)
+
+
 class Blender(torch.utils.data.Dataset):
-    def __init__(self, data_cfg, split, load_images=True):
+    def __init__(self, data_cfg, split, load_images=True, neighbor_cfg=None):
         super().__init__()
         assert split in ["train", "val", "test"]
 
@@ -44,6 +57,7 @@ class Blender(torch.utils.data.Dataset):
 
         self._records_keys = list(self._records.keys())
         self._length = len(self._records_keys)
+        self._pose_neighbors = self._build_pose_neighbors()
 
     def __getitem__(self, index):
         frame_key = self._records_keys[index % len(self._records_keys)]
@@ -51,6 +65,12 @@ class Blender(torch.utils.data.Dataset):
 
     def __len__(self):
         return self._length
+
+    def get_pose_neighbor(self, frame_key):
+        neighbor_key = self._pose_neighbors.get(frame_key, None)
+        if neighbor_key is None:
+            return None
+        return dict(self._records[neighbor_key])
 
     def _load_one_record(self, record):
         one_record_data = {
@@ -97,6 +117,8 @@ class Blender(torch.utils.data.Dataset):
             frame_stem = Path(frame_name).stem
             file_path = os.path.join(self._scene_root, relative_path.replace("/", os.sep))
             transform_matrix = torch.tensor(frame["transform_matrix"]).float()[:3]
+            camera_center = camera_center_from_c2w(transform_matrix)
+            camera_forward = camera_forward_from_c2w(transform_matrix)
             records[frame_key] = {
                 "frame_key": frame_key,
                 "frame_name": frame_name,
@@ -109,8 +131,91 @@ class Blender(torch.utils.data.Dataset):
                 "depth_tensor": None,
                 "structure_tensor": None,
                 "transform_matrix": transform_matrix,
+                "camera_center": camera_center,
+                "camera_forward": camera_forward,
             }
         return records, meta_info
+
+    def _build_pose_neighbors(self):
+        if self._render_split != "train":
+            return {}
+        if len(self._records) < 2:
+            return {}
+
+        frame_keys = list(self._records.keys())
+        centers = torch.stack([self._records[key]["camera_center"] for key in frame_keys], dim=0)
+        forwards = torch.stack([self._records[key]["camera_forward"] for key in frame_keys], dim=0)
+        neighbors = {}
+        for index, frame_key in enumerate(frame_keys):
+            center = centers[index:index + 1]
+            forward = forwards[index:index + 1]
+            distances = torch.norm(centers - center, dim=1)
+            alignment = torch.sum(forwards * forward, dim=1).clamp(-1.0, 1.0)
+            scores = distances + 0.25 * (1.0 - alignment)
+            scores[index] = float("inf")
+            neighbor_index = int(torch.argmin(scores).item())
+            neighbors[frame_key] = frame_keys[neighbor_index]
+        return neighbors
+
+    def _build_pose_only_topk_neighbors(self, frame_keys, centers, forwards):
+        neighbors = {}
+        for index, frame_key in enumerate(frame_keys):
+            center = centers[index:index + 1]
+            forward = forwards[index:index + 1]
+            distances = torch.norm(centers - center, dim=1)
+            alignment = torch.sum(forwards * forward, dim=1).clamp(-1.0, 1.0)
+            scores = distances + 0.25 * (1.0 - alignment)
+            scores[index] = float("inf")
+            order = torch.argsort(scores)[: self._neighbor_top_k]
+            neighbors[frame_key] = [
+                {
+                    "key": frame_keys[int(neighbor_index.item())],
+                    "score": float(-scores[int(neighbor_index.item())].item()),
+                    "overlap": 0.0,
+                }
+                for neighbor_index in order
+            ]
+        return neighbors
+
+    def _load_overlap_points(self):
+        colmap_points_path = Path(self._scene_root) / self._auxiliary_dir / "colmap_sparse" / "points.npy"
+        if colmap_points_path.exists():
+            points = np.load(colmap_points_path).astype(np.float32)
+            if points.ndim == 2 and points.shape[1] == 3 and points.shape[0] > 0:
+                if points.shape[0] > 8000:
+                    choice = np.random.choice(points.shape[0], size=8000, replace=False)
+                    points = points[choice]
+                return points
+        return None
+
+    def _project_points_visibility_mask(self, points_world, transform_matrix):
+        if points_world is None or points_world.shape[0] == 0:
+            return np.zeros((0,), dtype=bool)
+
+        width = int(self._data_info["img_w"])
+        height = int(self._data_info["img_h"])
+        fx = float(self._data_info["fl_x"])
+        fy = float(self._data_info["fl_y"])
+        cx = float(self._data_info["cx"])
+        cy = float(self._data_info["cy"])
+
+        c2w = np.eye(4, dtype=np.float32)
+        c2w[:3, :] = transform_matrix.cpu().numpy().astype(np.float32)
+        rotation = c2w[:3, :3]
+        translation = c2w[:3, 3]
+
+        cam_gl = (points_world - translation[None, :]) @ rotation
+        cam_cv = cam_gl * np.array([1.0, -1.0, -1.0], dtype=np.float32)
+        z = cam_cv[:, 2]
+        valid = np.isfinite(z) & (z > 1.0e-4)
+        if not np.any(valid):
+            return np.zeros((points_world.shape[0],), dtype=bool)
+
+        u = fx * (cam_cv[:, 0] / np.clip(z, 1.0e-4, None)) + cx
+        v = fy * (cam_cv[:, 1] / np.clip(z, 1.0e-4, None)) + cy
+        valid &= np.isfinite(u) & np.isfinite(v)
+        valid &= (u >= 0.0) & (u <= float(width - 1)) & (v >= 0.0) & (v <= float(height - 1))
+        return valid
 
     def _pre_loading_data(self):
         import multiprocessing
