@@ -34,3 +34,17 @@ def exposure_control_loss(rendered, target_mean):
     rendered_luma = luminance(rendered)
     target = torch.tensor(float(target_mean), device=rendered.device, dtype=rendered.dtype)
     return torch.abs(rendered_luma.mean() - target)
+
+
+def robust_exposure_control_loss(rendered, target_median, target_p75, mask_low=0.05, mask_high=0.95):
+    rendered_luma = luminance(rendered)
+    valid_mask = (rendered_luma > float(mask_low)) & (rendered_luma < float(mask_high))
+    valid_values = rendered_luma[valid_mask]
+    if valid_values.numel() == 0:
+        valid_values = rendered_luma.reshape(-1)
+
+    median_value = torch.median(valid_values)
+    p75_value = torch.quantile(valid_values, 0.75)
+    target_median = torch.tensor(float(target_median), device=rendered.device, dtype=rendered.dtype)
+    target_p75 = torch.tensor(float(target_p75), device=rendered.device, dtype=rendered.dtype)
+    return torch.abs(median_value - target_median) + 0.5 * torch.abs(p75_value - target_p75)

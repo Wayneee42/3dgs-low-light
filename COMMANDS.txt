@@ -13,7 +13,7 @@ python eval.py -w outputs/stage6_shadow_ft_v2/BlueHawaii/step_3000/step_3000.pt
 python eval.py -w outputs/stage6_shadow_ft_v2/BlueHawaii/step_5000/step_5000.pt
 
 
-Development鍦烘櫙锛?
+Development
 
 python tools/extract_marigold_depth.py dataset/Development/lowlight_development/development/Chocolate --checkpoint /root/autodl-tmp/3DRR_codebase/checkpoints/marigold-depth-lcm-v1-0 --device cuda --skip-existing
 python tools/extract_structure_prior.py dataset/Development/lowlight_development/development/Chocolate --device cuda --skip-existing
@@ -58,8 +58,12 @@ python train.py -c config/stage4_tuned_colmap/laboratory.yaml
 python eval.py -w outputs/stage4_tuned_colmap/Laboratory/step_15000/step_15000.pt
 python train.py -c config/stage5b_ft/laboratory.yaml
 python eval.py -w outputs/stage5b_ft/Laboratory/step_5000/step_5000.pt
-python train.py -c config/stage6_shadow_ft_v2/laboratory.yaml
-python eval.py -w outputs/stage6_shadow_ft_v2/Laboratory/step_5000/step_5000.pt
+conda activate low-light
+cd autodl-tmp/3DRR_codebase
+python train.py -c config/stage6_canonical_calib_v3/laboratory.yaml
+python eval.py -w outputs/stage6_canonical_calib_v3/Laboratory/step_2000/step_2000.pt
+python eval.py -w outputs/stage6_canonical_calib_v3/Laboratory/step_3000/step_3000.pt
+python eval.py -w outputs/stage6_canonical_calib_v3/Laboratory/step_5000/step_5000.pt
 
 
 

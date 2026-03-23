@@ -1,0 +1,249 @@
+这是一个**很典型的退化解**，而且更像是目标设计问题，不是你实现错了。
+按你文档里的当前设计，stage6 的核心就是
+
+[
+L = L_{\text{obs_photo}}\big(T_i(R_{\text{canon}}), I_i^{\text{low}}\big)
+
+* \lambda_{\text{view}} L_{\text{view_id}}(T_i \approx I)
+* \lambda_{\text{canon}} L_{\text{canon_exposure}}(R_{\text{canon}})
+  ]
+
+其中 `L_view_id` 把每个视角参数往 identity 拉，`L_canon_exposure` 只是把 `rgb_base_hwc` 的亮度均值弱锚到 `canonical_target_mean=0.38`。在这种组合下，最容易达到的解就是：**`R_canon ≈ 低照图`，`T_i ≈ identity`**。也就是你现在看到的“canonical 自己塌回低照域”。这和你计划里当前的 `ViewCalibrationTable=[log_a,b,u,v] + L_view_id + CanonicalExposureAnchorLoss` 完全一致。
+
+我建议你不要再继续加更强的 exposure，而是直接改 **stage6 的规范固定方式**。优先级如下。
+
+## 先做的两件事
+
+### 1）先确认不是“接线没切干净”
+
+先查这几个点，任何一个没关掉，`R_canon` 都会被继续往低照图上拉：
+
+* `CANONICAL_CALIB.ENABLED` 时，默认的 base `RGBReconstructionLoss(rendered -> supervision)` 是否真的没构建
+* `ReconstructionLoss` 是否真的没构建
+* `PROXY_TARGET`、`illum head`、`AUGMENTATION`、`MULTIVIEW` 是否都关了
+* `L_obs_photo` 的输入是不是 **`view_calibrated_hwc`**，而不是 `rgb_base_hwc`
+* `L_canon_exposure` 的输入是不是 **`rgb_base_hwc`**，不是 calibrated 图
+* `canonical_target_mean` 有没有误用训练期 jitter 的 `target_mean`
+
+这些正是你文档里 stage6 新路线要求切掉或改接线的部分。
+
+如果这几项都没问题，那就是下面这个更本质的问题：**你的 `T_i` 还太像“校正器”，不像“退化器”**。
+
+---
+
+## 真正该改的：把 `T_i` 改成“只能把 canonical 变暗”的退化模型
+
+你文档里现在的亮度变换是：
+
+[
+Y' = \sigma(a \cdot \operatorname{logit}(Y) + b)
+]
+
+这个形式的问题是：`a,b` 同时存在时，`T_i` 既能变暗，也能变亮，还能改对比。
+再叠加 `L_view_id` 拉回 identity，系统自然更喜欢：
+
+* `R_canon` 直接自己去拟合低照
+* `T_i` 少干活，靠近 identity
+
+### 最小改法
+
+第一版别用 `[log_a, b, u, v]`，先缩成 **`[d, u, v]`**：
+
+[
+d = \mathrm{softplus}(raw_d) \ge 0
+]
+
+[
+Y_{\text{obs-pred}} = \sigma(\operatorname{logit}(Y_{\text{canon}}) - d)
+]
+
+[
+C_b' = C_b + u,\quad C_r' = C_r + v
+]
+
+其中：
+
+[
+u = 0.02 \tanh(raw_u), \quad v = 0.02 \tanh(raw_v)
+]
+
+也就是：
+
+* `d` 只能让图变暗，不能变亮
+* `u,v` 只做很小的色偏补偿
+* 第一版先不要 `a`
+
+这样 `T_i` 就从“自由校正器”变成了“单向退化器”。
+只要 `R_canon` 比输入亮，`T_i` 就能解释观测；反过来，如果 `R_canon` 想塌回低照，`T_i` 就失去存在价值了。
+
+这一步我认为是**最关键**的，不是可选项。
+
+---
+
+## 第二个关键改法：不要再用 identity prior，改成“以低照退化初值为中心的 prior”
+
+你现在的 `L_view_id` 本质上是在鼓励所有视角：
+
+[
+T_i \approx I
+]
+
+这和“希望 canonical 比观测更亮”是冲突的。
+因为如果观测本来就是低照，那最便宜的解永远是 `R_canon` 变低照，`T_i` 回 identity。
+
+### 改成这样
+
+先从原始低照图里，给每个 train view 估一个初始暗化量 `d_i^0`：
+
+[
+m_i = \operatorname{median}(Y_i^{obs})
+]
+
+[
+m_c = \text{canonical target mean/median}
+]
+
+[
+d_i^0 = \operatorname{clip}\big(\operatorname{logit}(m_c) - \operatorname{logit}(m_i),\ 0,\ d_{\max}\big)
+]
+
+然后 prior 改成：
+
+[
+L_{\text{view-prior}} = (d_i - d_i^0)^2 + \rho(u_i^2 + v_i^2)
+]
+
+而不是原来的 identity loss。
+
+直观上就是：
+
+* 不是要求每个 view “别变”
+* 而是要求每个 view “按它自己的低照程度去变暗”
+
+这会直接解决你现在这个退化方向。
+
+---
+
+## 第三个关键改法：canonical 锚点不能只看全图均值
+
+你现在复用了 exposure 模块去锚 `R_canon`，这个思路没错，但**全图 mean 太弱了**。
+它很容易被大面积黑背景、阴影区域、或者少量高亮区域骗过去。
+
+### 更稳的锚法
+
+至少把 exposure anchor 改成下面这种之一：
+
+#### 方案 A：只在有效亮度区域上算
+
+[
+mask = (Y > 0.05) \land (Y < 0.95)
+]
+
+在这个 mask 上算 mean/median，而不是全图。
+
+#### 方案 B：用 median 或 percentile，不只用 mean
+
+比如：
+
+[
+L_{\text{canon-exp}} = | \operatorname{median}(Y_{mask}) - \tau_m |
+
+* 0.5 \cdot | P75(Y_{mask}) - \tau_{75} |
+  ]
+
+这样不会出现“整体还很暗，但靠少数亮点把 mean 拉上去”的情况。
+
+#### 方案 C：给最亮的几张 train view 当 reference anchor
+
+从训练集挑最亮、最干净的 3–5 张图，让它们的 `d_i` 更接近 0，或者直接前几百 step 固定为 0。
+这相当于人为定义一部分视角接近 canonical，规范就不容易漂。
+
+如果只能先选一个，我建议先做 **A + B**。
+
+---
+
+## 第四个关键改法：stage6 开头不要 joint optimize，先让 `T_i` 学会“吃掉低照”
+
+你现在如果一开始就 joint optimize：
+
+* `R_canon`
+* SH/color
+* `T_i`
+
+那么 photo loss 的最快下降方向，通常还是 `R_canon` 自己去变暗。
+
+### 推荐 schedule
+
+#### 前 300–1000 step
+
+* 冻结 geometry
+* 冻结 SH / base color
+* **只优化 `d,u,v`**
+* 用上面那个 `d_i^0` 初始化
+
+目的很明确：先让每个视角参数学会“解释低照观测”。
+
+#### 后 1000–3000 step
+
+* 继续冻结 geometry
+* 解冻 SH / color，但学习率设很小
+* `LR_VIEW_CALIB` 保持比 SH 大 5–10 倍
+
+#### 最后阶段
+
+* joint optimize，但 `view calib` 仍然比 SH 更快
+* geometry 始终冻结或近似冻结
+
+你文档里已经建议 stage6 几何学习率降到 stage5 的 `1/10`，这方向是对的；但如果现在 canonical 还在塌，我建议更激进一点：**stage6 直接冻结 geometry**，只动 SH/color 和 `view calib`。
+
+---
+
+## 我最建议你立刻跑的最小 ablation
+
+别一下子全改，先跑这个最小版：
+
+### Ablation 1
+
+只改 3 件事：
+
+1. 把 `[log_a,b,u,v]` 改成 `[d,u,v]`
+2. 把 `L_view_id` 改成 `(d-d0)^2 + rho(u^2+v^2)`
+3. stage6 前 500 step 只优化 `view calib`
+
+公式就是：
+
+[
+Y_{\text{obs-pred}} = \sigma(\operatorname{logit}(Y_{\text{canon}}) - d)
+]
+
+[
+d_0 = \operatorname{clip}(\operatorname{logit}(m_c)-\operatorname{logit}(m_i),0,d_{\max})
+]
+
+[
+L = L_{\text{obs-photo}} + \lambda_{\text{view}}[(d-d_0)^2+\rho(u^2+v^2)] + \lambda_{\text{canon}}L_{\text{canon-exp}}
+]
+
+这里 `u,v` 甚至可以先关掉，第一版先只做亮度。
+
+### Ablation 2
+
+如果 Ablation 1 不再塌，但颜色偏差明显，再把 `u,v` 打开。
+
+---
+
+## 我对你当前现象的判断
+
+这不是“exposure anchor 不够聪明”，而是：
+
+**“identity prior 的 `T_i` + 太弱的 canonical 锚”在数学上就天然偏向低照 canonical。**
+
+所以真正该改的不是再找更强的 exposure loss，而是：
+
+* **把 `T_i` 改成退化模型**
+* **把 `L_view_id` 改成围绕低照初值的 prior**
+* **把 canonical 锚从全图 mean 改成更稳的亮度统计**
+* **stage6 前期先只学 view params，不要一开始 joint**
+
+
+

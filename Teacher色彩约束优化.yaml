@@ -1,0 +1,427 @@
+可以，而且我觉得这就是你现在这条线里**最顺手、也最对症**的办法。
+
+不是把 `0–20k` 的彩色 checkpoint 当成“正常光照 GT”，而是把它当成一个**冻结的色彩教师（color teacher）**：
+它提供 **chroma / reflectance 倾向**，但**不提供亮度真值**。
+这样正好能补你现在 `stage6_canonical_calib_v2` 的短板：`v2` 已经把 canonical 从低照塌缩里拉出来了，但因为只有亮度 anchor，没有颜色 anchor，所以最后走到了“亮度对、结构对、颜色灰掉”的解。
+
+你现在最合适的做法不是推翻 `v2`，而是在它上面加一层：
+
+**Frozen Stage5 Color Anchor**
+
+也就是：
+
+* 保留你现在 `v2` 的单向退化器 `[d, u, v]`
+* 保留 robust exposure anchor
+* 保留 geometry freeze / structure prior
+* 新增一个来自 **20k 前彩色 checkpoint** 的 **弱色彩锚点**
+
+---
+
+# 为什么这个方法适合你当前 pipeline
+
+你的前 `0–20k` 流程里：
+
+* `0–5k`：RGB + SSIM + exposure
+* `5k–15k`：加 depth prior + multiview
+* `15k–20k`：弱 depth + multiview + exposure + structure prior
+
+这一段训练出来的模型虽然不是正常光照模型，但它至少有两个优点：
+
+第一，它的颜色是**多视角融合后**的颜色，不是单张极低光照原图里的噪声色。
+第二，它还没有进入你现在 `stage6` 的“去彩化 basin”，也就是还没出现黑白化。
+
+所以它非常适合做：
+
+* **色彩方向锚点**
+* **色度下限锚点**
+* **反灰化锚点**
+
+但不适合做：
+
+* 亮度 teacher
+* 完整 RGB teacher
+* 正常光照 teacher
+
+---
+
+# 你应该怎么用：只锚 **颜色**，不要锚 **亮度**
+
+这是最关键的一点。
+
+如果你直接对 teacher 和当前 canonical 做 RGB/L1，对 `L/Y` 也一起对齐，那会把 student 又往低照 teacher 的亮度域拖回去。
+所以正确用法是：
+
+* teacher 只提供 `ab` / `CbCr` / normalized chroma
+* 当前 canonical 的亮度仍然由你现在的 robust exposure prior 来定
+* 也就是说：
+  **亮度靠 `v2`，颜色靠 stage5 teacher**
+
+我建议你直接在 `Lab` 空间做，因为最清晰。
+
+---
+
+# 推荐方案：`stage6_canonical_calib_v3 = v2 + frozen color teacher`
+
+## 1）teacher 选哪个 checkpoint
+
+不要用很早的。
+直接用你 `stage5` 结束时、也就是 **20k 左右那个最后还彩色、几何也较稳的 checkpoint**。
+
+更稳一点的话，可以在 `18k / 19k / 20k` 里选一个最稳定的，或者把这 2–3 个 checkpoint 渲染出的 chroma 做个平均，当 teacher cache。第一版先用单个 20k teacher 就够了。
+
+---
+
+## 2）teacher 不在线训练，直接冻结
+
+你不需要多训一个网络。
+
+最省资源的做法是：
+
+### 在进入 stage6 之前，先离线预渲染 teacher 的 train views
+
+对每个 train frame，用 `stage5 teacher` 渲染一次 canonical：
+
+[
+I_t^k = R_{\text{teacher}}(view_k)
+]
+
+然后把下面这些缓存下来：
+
+* `teacher_rgb_base_hwc`
+* `teacher_lab_ab`
+* `teacher_chroma = sqrt(a^2+b^2)`
+* `teacher_mask`
+* 每帧的 `Q50/Q75(chroma)`
+
+这样 stage6 时根本不需要双模型同时前向，开销很低。
+
+---
+
+## 3）teacher loss 只作用在 student 的 canonical 输出上
+
+也就是：
+
+* `teacher` 看的是 `teacher_rgb_base_hwc`
+* `student` 看的是当前 `rgb_base_hwc`
+* **不是** `view_calibrated_hwc`
+* 更不是 `T_i(rgb_base_hwc)`
+
+因为你要锚的是 **canonical 本体的颜色**，不是 view degradation 后的观测图。
+
+---
+
+# 具体 loss 怎么写
+
+## 第一个：像素级色彩方向锚点
+
+把 teacher 和 student 的 canonical 都转到 `Lab`：
+
+[
+(L_t, a_t, b_t), \quad (L_s, a_s, b_s)
+]
+
+定义 chroma：
+
+[
+C_t = \sqrt{a_t^2+b_t^2}, \quad C_s = \sqrt{a_s^2+b_s^2}
+]
+
+定义 mask：
+
+[
+M = (L_t > 0.08) \land (L_t < 0.95) \land (C_t > \tau_c)
+]
+
+如果你有 accumulation / alpha，也建议再乘一个：
+
+[
+M = M \land (\alpha_t > 0.2) \land (\alpha_s > 0.2)
+]
+
+然后做 **色彩方向** 对齐，而不是直接 RGB 对齐：
+
+[
+L_{\text{dir}} =
+\mathrm{mean}\Big[
+M \cdot \Big(1 - \frac{a_s a_t + b_s b_t}{C_s C_t + \epsilon}\Big)
+\Big]
+]
+
+这条 loss 的含义是：
+
+* 颜色“朝向”跟 teacher 类似
+* 但不强迫亮度一样
+* 也不强迫饱和度完全一样
+
+这很适合你现在这种“teacher 颜色可信，但亮度不可信”的情况。
+
+---
+
+## 第二个：色度下限锚点
+
+因为 teacher 本身也是低照，所以不建议强行让 `C_s = C_t`。
+更合理的是只要求：
+
+**student 不能比 teacher 还更灰。**
+
+写成：
+
+[
+L_{\text{floor}} =
+\mathrm{mean}\Big[
+M \cdot \mathrm{ReLU}(\eta C_t - C_s)
+\Big]
+]
+
+其中 `η` 先取 `0.8 ~ 1.0`。
+
+这条 loss 比“精确匹配 teacher 饱和度”好很多，因为：
+
+* teacher 本身可能偏暗、偏淡
+* 你只需要它给一个**最低色度边界**
+* 不需要把 teacher 的低照外观原封不动继承下来
+
+---
+
+## 第三个：全局 anti-gray 锚点
+
+你现在的问题不是局部偏色，而是**整图去饱和**。
+所以再加一个每帧的全局色度分位数约束会很有效。
+
+teacher 预计算每帧：
+
+[
+q_{50}^t = Q50(C_t[M]), \quad q_{75}^t = Q75(C_t[M])
+]
+
+student 当前也算：
+
+[
+q_{50}^s = Q50(C_s[M]), \quad q_{75}^s = Q75(C_s[M])
+]
+
+然后：
+
+[
+L_{\text{global}} =
+\mathrm{ReLU}(\eta_{50} q_{50}^t - q_{50}^s)
+
+* 0.5 \cdot \mathrm{ReLU}(\eta_{75} q_{75}^t - q_{75}^s)
+  ]
+
+`η50, η75` 先取 `0.8~0.9`。
+
+这条 loss 的作用非常直接：
+
+**防止 canonical 的整体色度分布塌成黑白。**
+
+---
+
+# 总的 teacher color loss
+
+[
+L_{\text{teacher-color}} =
+\lambda_{\text{dir}} L_{\text{dir}}
+
+* \lambda_{\text{floor}} L_{\text{floor}}
+* \lambda_{\text{global}} L_{\text{global}}
+  ]
+
+建议起始权重：
+
+* `λ_dir = 0.02`
+* `λ_floor = 0.01`
+* `λ_global = 0.01`
+
+如果你担心 teacher 偏脏，可以把 `dir` 先用 Huber 版或 cosine 版，不要直接 L1。
+
+---
+
+# 和你现有 v2 怎么拼
+
+你现在 `v2` 的 stage6 本质上已经有：
+
+[
+L = L_{\text{obs}} + \lambda_{vpr} L_{vpr} + \lambda_{cex} L_{cex} + \lambda_{str} L_{str}
+]
+
+那就变成：
+
+[
+L = L_{\text{obs}} + \lambda_{vpr} L_{vpr} + \lambda_{cex} L_{cex} + \lambda_{str} L_{str} + \lambda_{tc} L_{\text{teacher-color}}
+]
+
+其中：
+
+* `L_obs`：仍然是 `view_calibrated_hwc -> raw low-light`
+* `L_vpr`：仍然是 `(d-d0)^2 + rho(u^2+v^2)`
+* `L_cex`：仍然是 robust exposure anchor，作用在 `rgb_base_hwc`
+* `L_str`：保留你当前的 structure prior
+* `L_teacher-color`：**只作用在 `rgb_base_hwc`**
+
+这就是最自然的接法。
+
+---
+
+# 训练调度怎么改
+
+你文档里 `v2` 的一个问题，是 Phase A 前 500 step 只训练 `view_calibration`，而且 `view_calibration lr = sh 的 5~10x`。
+这很容易让系统先把亮度问题用 `d` 吃掉，然后把 color path 一路压死，最后 `uv_mean` 越来越低。
+
+所以我建议基于你当前记录，调成：
+
+## Phase A：0–150 step
+
+* 冻结 geometry
+* 冻结 `sh0/shN`
+* 只训练 `view_calibration`
+* **不启用 teacher color loss**
+
+目的还是让 `d` 先学会吃低照，但不要太久。
+
+## Phase B：150–800 step
+
+* geometry 继续冻结
+* 解冻 `sh0/shN`
+* 启用 `teacher color loss`
+* `LR_VIEW_CALIB = 2~3 × LR_SH`
+* 不要再用 `5~10x`
+
+## Phase C：800–end
+
+* 保持 geometry 冻结
+* `teacher color loss` 保持常数，或者小幅衰减
+* `L_cex` 可维持原值或稍降
+
+这会比你现在的长 Phase A 稳很多。
+
+---
+
+# 关于 `u,v` 要不要立刻改
+
+就这个问题本身，我建议：
+
+**先不动参数化，先在当前 `[d,u,v]` 上加 teacher color anchor。**
+
+原因是你现在最缺的不是“view color calibration 能力”，而是**canonical 本体没有色彩锚点**。
+先把这个问题解决，再看 `u,v` 是否还需要升级成 `r/b gain`。
+
+也就是说：
+
+* 第一版：`[d,u,v] + teacher color anchor`
+* 如果还发现某些视角有白平衡漂移，再考虑把 `u,v` 换成 `g_r/g_b`
+
+别一次改太多，不然你很难判断到底是哪项起作用。
+
+---
+
+# 一个更省资源的实现版本
+
+如果你连 teacher 逐步渲染都不想做，最推荐的是：
+
+## 离线缓存 teacher 的 `Lab-ab + mask + quantiles`
+
+进入 stage6 前一次性做：
+
+对每个 train frame `k`：
+
+1. 用 20k teacher 渲染 `teacher_rgb_base_hwc`
+2. 转 `Lab`
+3. 存：
+
+   * `ab_teacher[k]`
+   * `mask_teacher[k]`
+   * `q50_teacher[k]`
+   * `q75_teacher[k]`
+
+stage6 每次训练某个 frame 时，直接读取缓存即可。
+
+这样额外开销非常小。
+
+---
+
+# 我建议你直接加的配置项
+
+可以在 `CANONICAL_CALIB` 下面加：
+
+```yaml
+COLOR_TEACHER:
+  ENABLED: true
+  CKPT_PATH: /path/to/stage5_20k.ckpt
+  PRECOMPUTE: true
+  SPACE: lab_ab
+  MASK_L_LOW: 0.08
+  MASK_L_HIGH: 0.95
+  MASK_CHROMA_MIN: 0.02
+  ETA_FLOOR: 0.9
+  ETA_Q50: 0.85
+  ETA_Q75: 0.85
+  LAMBDA_DIR: 0.02
+  LAMBDA_FLOOR: 0.01
+  LAMBDA_GLOBAL: 0.01
+  WARMUP_STEPS: 150
+  RAMP_STEPS: 500
+```
+
+然后把你现在 v2 里这几项也一起改：
+
+```yaml
+CANONICAL_CALIB:
+  COLOR_PRIOR_RHO: 1.0 ~ 2.0
+  LR_VIEW_CALIB: 保持高于 SH，但只高 2~3 倍
+PHASE_A_STEPS: 150
+```
+
+---
+
+# 还可以再加一个“参数级保险丝”
+
+如果你想更稳，但又不想太重，可以再加一个**很弱的 SH 色彩正则**，只锚 `sh0` 的 chroma，不锚亮度。
+
+也就是把 stage5 checkpoint 的 `sh0_teacher` 保存下来，对 student 当前的 `sh0` 做一个弱正则：
+
+[
+L_{\text{sh-chroma}} = |\mathrm{chroma}(sh0_s) - \mathrm{chroma}(sh0_t)|_1
+]
+
+但我建议这只是备选。
+第一版先做**像素空间 teacher color anchor**，更直观，也更容易和 train-view 可见区域对齐。
+
+---
+
+# 我最推荐你跑的版本
+
+如果只跑一版，我建议就是这个：
+
+## `stage6_canonical_calib_v3`
+
+保留你现在 v2 的主体：
+
+* 单向退化器 `[d,u,v]`
+* `d0 prior`
+* robust exposure anchor
+* structure prior
+* geometry freeze
+
+新增：
+
+* frozen stage5 color teacher
+* teacher 只在 `rgb_base_hwc` 上提供 `Lab-ab` 色彩锚点
+* teacher loss = `direction + floor + global anti-gray`
+* Phase A 从 500 step 缩到 150 step
+* `LR_VIEW_CALIB : LR_SH = 2~3 : 1`
+* `COLOR_PRIOR_RHO` 降到 `1~2`
+
+---
+
+# 最后一句判断
+
+**能，而且很值得做。**
+对你现在这条 pipeline 来说，`0–20k` 学到的彩色 checkpoint 不是“真值老师”，但它很适合作为 **stage6 canonical 的弱色彩锚点**。它正好能补上你 v2 方案里“亮度可辨识、颜色不可辨识”的缺口，而且不需要再引入新网络或重型分支。
+
+你下一步最值得先试的，不是继续调 exposure，也不是立刻换 `u,v` 参数化，而是：
+
+**“v2 + frozen stage5 chroma teacher”**。
+
+如果你愿意，我下一条可以直接把这套方案写成一版更接近你现有代码组织的伪代码，包括：
+`builder.py / train.py / teacher cache / loss module` 的具体接线。

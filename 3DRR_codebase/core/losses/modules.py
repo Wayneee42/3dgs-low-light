@@ -1,6 +1,51 @@
-from core.libs.losses import exposure_control_loss, low_light_consistency_loss, rgb_reconstruction_loss
+﻿from core.libs.losses import (
+    exposure_control_loss,
+    low_light_consistency_loss,
+    rgb_reconstruction_loss,
+    robust_exposure_control_loss,
+)
 import torch
 import torch.nn.functional as F
+
+
+def _rgb_to_lab_hwc(rgb_hwc):
+    rgb = torch.clamp(rgb_hwc, 0.0, 1.0)
+    linear = torch.where(
+        rgb <= 0.04045,
+        rgb / 12.92,
+        ((rgb + 0.055) / 1.055) ** 2.4,
+    )
+    x = 0.4124564 * linear[..., 0] + 0.3575761 * linear[..., 1] + 0.1804375 * linear[..., 2]
+    y = 0.2126729 * linear[..., 0] + 0.7151522 * linear[..., 1] + 0.0721750 * linear[..., 2]
+    z = 0.0193339 * linear[..., 0] + 0.1191920 * linear[..., 1] + 0.9503041 * linear[..., 2]
+
+    x = x / 0.95047
+    z = z / 1.08883
+
+    delta = 6.0 / 29.0
+    delta_cube = delta ** 3
+    delta_square = delta ** 2
+
+    def _f(component):
+        return torch.where(
+            component > delta_cube,
+            torch.pow(component.clamp_min(1.0e-8), 1.0 / 3.0),
+            component / (3.0 * delta_square) + 4.0 / 29.0,
+        )
+
+    fx = _f(x)
+    fy = _f(y)
+    fz = _f(z)
+    l = (116.0 * fy - 16.0) / 100.0
+    a = 500.0 * (fx - fy)
+    b = 200.0 * (fy - fz)
+    return l, a, b
+
+
+def _masked_mean(values, mask):
+    if not bool(mask.any().item()):
+        return values.new_zeros(())
+    return values[mask].mean()
 
 
 class BaseLossModule:
@@ -126,12 +171,298 @@ class LowLightConsistencyLoss(BaseLossModule):
 
 
 class ExposureControlLoss(BaseLossModule):
-    def __init__(self, weight):
-        super().__init__(name="exposure", weight=weight, enabled=weight > 0.0, start_step=0)
+    def __init__(self, weight, input_key="rendered", target_mean_key="target_mean", name="exposure"):
+        super().__init__(name=name, weight=weight, enabled=weight > 0.0, start_step=0)
+        self.input_key = str(input_key)
+        self.target_mean_key = str(target_mean_key)
 
     def compute(self, context):
-        loss = exposure_control_loss(context["rendered"], context["target_mean"])
+        target_mean = context.get(self.target_mean_key)
+        if target_mean is None:
+            raise RuntimeError(f"ExposureControlLoss requires '{self.target_mean_key}' in context.")
+        loss = exposure_control_loss(context[self.input_key], target_mean)
         return loss, {}
+
+
+class CanonicalObservationLoss(BaseLossModule):
+    def __init__(self, lambda_ssim, weight=1.0):
+        super().__init__(name="obs_photo", weight=weight, enabled=weight > 0.0, start_step=0)
+        self.lambda_ssim = float(lambda_ssim)
+
+    def compute(self, context):
+        result = rgb_reconstruction_loss(
+            context["view_calibrated_hwc"],
+            context["reference_hwc"],
+            lambda_ssim=self.lambda_ssim,
+        )
+        return result["total"], {
+            "l1": float(result["l1"].detach().item()),
+            "ssim": float(result["ssim"].detach().item()),
+        }
+
+
+class ViewCalibrationIdentityLoss(BaseLossModule):
+    def __init__(self, weight, color_identity_rho=8.0):
+        super().__init__(name="view_id", weight=weight, enabled=weight > 0.0, start_step=0)
+        self.color_identity_rho = float(color_identity_rho)
+
+    def compute(self, context):
+        decoded = context.get("view_params_decoded")
+        if decoded is None:
+            raise RuntimeError("ViewCalibrationIdentityLoss requires 'view_params_decoded' in context.")
+        a = decoded["a"]
+        b = decoded["b"]
+        u = decoded["u"]
+        v = decoded["v"]
+        loss = ((a - 1.0) ** 2 + b ** 2 + self.color_identity_rho * (u ** 2 + v ** 2)).mean()
+        uv_mean = torch.sqrt(u ** 2 + v ** 2).mean()
+        return loss, {
+            "a_mean": float(a.detach().mean().item()),
+            "b_mean": float(b.detach().mean().item()),
+            "uv_mean": float(uv_mean.detach().item()),
+        }
+
+
+class ViewCalibrationPriorLoss(BaseLossModule):
+    def __init__(
+        self,
+        weight,
+        color_prior_rho=8.0,
+        start_step=0,
+        end_step=None,
+        ramp_up_steps=0,
+        ramp_down_steps=0,
+        start_scale=1.0,
+        end_scale=0.0,
+    ):
+        super().__init__(
+            name="view_prior",
+            weight=weight,
+            enabled=weight > 0.0,
+            start_step=start_step,
+            end_step=end_step,
+            ramp_up_steps=ramp_up_steps,
+            ramp_down_steps=ramp_down_steps,
+            start_scale=start_scale,
+            end_scale=end_scale,
+        )
+        self.color_prior_rho = float(color_prior_rho)
+
+    def compute(self, context):
+        decoded = context.get("view_params_decoded")
+        prior_d0 = context.get("view_prior_d0")
+        if decoded is None:
+            raise RuntimeError("ViewCalibrationPriorLoss requires 'view_params_decoded' in context.")
+        if prior_d0 is None:
+            raise RuntimeError("ViewCalibrationPriorLoss requires 'view_prior_d0' in context.")
+        d = decoded["d"]
+        s = decoded["s"]
+        u = decoded["u"]
+        v = decoded["v"]
+        prior_d0 = torch.as_tensor(prior_d0, device=d.device, dtype=d.dtype).reshape_as(d)
+        loss = ((d - prior_d0) ** 2 + self.color_prior_rho * ((1.0 - s) ** 2 + u ** 2 + v ** 2)).mean()
+        uv_mean = torch.sqrt(u ** 2 + v ** 2).mean()
+        return loss, {
+            "d_mean": float(d.detach().mean().item()),
+            "s_mean": float(s.detach().mean().item()),
+            "uv_mean": float(uv_mean.detach().item()),
+        }
+
+
+class CanonicalExposureAnchorLoss(BaseLossModule):
+    def __init__(self, weight, mask_low=0.05, mask_high=0.95):
+        super().__init__(name="canon_exp", weight=weight, enabled=weight > 0.0, start_step=0)
+        self.mask_low = float(mask_low)
+        self.mask_high = float(mask_high)
+
+    def compute(self, context):
+        target_median = context.get("canonical_target_median")
+        target_p75 = context.get("canonical_target_p75")
+        if target_median is None:
+            raise RuntimeError("CanonicalExposureAnchorLoss requires 'canonical_target_median' in context.")
+        if target_p75 is None:
+            raise RuntimeError("CanonicalExposureAnchorLoss requires 'canonical_target_p75' in context.")
+        loss = robust_exposure_control_loss(
+            context["rgb_base_hwc"],
+            target_median=target_median,
+            target_p75=target_p75,
+            mask_low=self.mask_low,
+            mask_high=self.mask_high,
+        )
+        return loss, {}
+
+
+class TeacherChromaConsistencyLoss(BaseLossModule):
+    def __init__(self, weight):
+        super().__init__(name="teacher_chroma", weight=weight, enabled=weight > 0.0, start_step=0)
+
+    def compute(self, context):
+        rendered = context["rgb_base_hwc"]
+        reference = context.get("teacher_rgb_hwc")
+        if reference is None:
+            raise RuntimeError("TeacherChromaConsistencyLoss requires 'teacher_rgb_hwc' in context.")
+        rendered_cb = -0.168736 * rendered[..., 0] - 0.331264 * rendered[..., 1] + 0.5 * rendered[..., 2]
+        rendered_cr = 0.5 * rendered[..., 0] - 0.418688 * rendered[..., 1] - 0.081312 * rendered[..., 2]
+        reference_cb = -0.168736 * reference[..., 0] - 0.331264 * reference[..., 1] + 0.5 * reference[..., 2]
+        reference_cr = 0.5 * reference[..., 0] - 0.418688 * reference[..., 1] - 0.081312 * reference[..., 2]
+        loss = torch.abs(rendered_cb - reference_cb).mean() + torch.abs(rendered_cr - reference_cr).mean()
+        return loss, {}
+
+
+class TeacherColorAnchorLoss(BaseLossModule):
+    def __init__(
+        self,
+        lambda_l,
+        lambda_ab,
+        lambda_c,
+        mask_l_low=0.08,
+        mask_l_high=0.95,
+        mask_chroma_min=0.02,
+        alpha_min=0.2,
+        eps=1.0e-6,
+    ):
+        total_weight = float(lambda_l) + float(lambda_ab) + float(lambda_c)
+        super().__init__(name="teacher_color", weight=1.0, enabled=total_weight > 0.0, start_step=0)
+        self.lambda_l = float(lambda_l)
+        self.lambda_ab = float(lambda_ab)
+        self.lambda_c = float(lambda_c)
+        self.mask_l_low = float(mask_l_low)
+        self.mask_l_high = float(mask_l_high)
+        self.mask_chroma_min = float(mask_chroma_min)
+        self.alpha_min = float(alpha_min)
+        self.eps = float(eps)
+
+    def compute(self, context):
+        student = context["rgb_base_hwc"]
+        teacher = context.get("teacher_rgb_hwc")
+        if teacher is None:
+            raise RuntimeError("TeacherColorAnchorLoss requires 'teacher_rgb_hwc' in context.")
+
+        l_s, a_s, b_s = _rgb_to_lab_hwc(student)
+        l_t, a_t, b_t = _rgb_to_lab_hwc(teacher)
+        c_s = torch.sqrt(a_s ** 2 + b_s ** 2 + self.eps)
+        c_t = torch.sqrt(a_t ** 2 + b_t ** 2 + self.eps)
+
+        luma_mask = (l_t > self.mask_l_low) & (l_t < self.mask_l_high)
+
+        alpha_s = context.get("alphas")
+        if alpha_s is not None:
+            if alpha_s.dim() == 3 and alpha_s.shape[-1] == 1:
+                alpha_s = alpha_s.squeeze(-1)
+            luma_mask = luma_mask & (alpha_s > self.alpha_min)
+
+        alpha_t = context.get("teacher_alphas")
+        if alpha_t is not None:
+            if alpha_t.dim() == 3 and alpha_t.shape[-1] == 1:
+                alpha_t = alpha_t.squeeze(-1)
+            luma_mask = luma_mask & (alpha_t > self.alpha_min)
+
+        chroma_mask = luma_mask & (c_t > self.mask_chroma_min)
+
+        if not bool(luma_mask.any().item()):
+            zero = student.new_zeros(())
+            return zero, {"l": 0.0, "ab": 0.0, "c": 0.0}
+
+        l_loss = _masked_mean(torch.abs(l_s - l_t), luma_mask)
+        if bool(chroma_mask.any().item()):
+            ab_loss = _masked_mean(torch.abs(a_s - a_t) + torch.abs(b_s - b_t), chroma_mask)
+            c_loss = _masked_mean(torch.abs(c_s - c_t), chroma_mask)
+        else:
+            ab_loss = student.new_zeros(())
+            c_loss = student.new_zeros(())
+        total = self.lambda_l * l_loss + self.lambda_ab * ab_loss + self.lambda_c * c_loss
+        return total, {
+            "l": float(l_loss.detach().item()),
+            "ab": float(ab_loss.detach().item()),
+            "c": float(c_loss.detach().item()),
+        }
+
+
+class TeacherLuminanceFloorLoss(BaseLossModule):
+    def __init__(
+        self,
+        lambda_abs,
+        lambda_floor,
+        lambda_quantile,
+        mask_l_low=0.18,
+        mask_l_high=0.9,
+        alpha_min=0.2,
+        eta=0.9,
+        eta50=0.9,
+        eta75=0.9,
+    ):
+        total_weight = float(lambda_abs) + float(lambda_floor) + float(lambda_quantile)
+        super().__init__(name="teacher_luma", weight=1.0, enabled=total_weight > 0.0, start_step=0)
+        self.lambda_abs = float(lambda_abs)
+        self.lambda_floor = float(lambda_floor)
+        self.lambda_quantile = float(lambda_quantile)
+        self.mask_l_low = float(mask_l_low)
+        self.mask_l_high = float(mask_l_high)
+        self.alpha_min = float(alpha_min)
+        self.eta = float(eta)
+        self.eta50 = float(eta50)
+        self.eta75 = float(eta75)
+
+    def compute(self, context):
+        student = context["rgb_base_hwc"]
+        teacher = context.get("teacher_rgb_hwc")
+        if teacher is None:
+            raise RuntimeError("TeacherLuminanceFloorLoss requires 'teacher_rgb_hwc' in context.")
+
+        y_s = 0.299 * student[..., 0] + 0.587 * student[..., 1] + 0.114 * student[..., 2]
+        y_t = 0.299 * teacher[..., 0] + 0.587 * teacher[..., 1] + 0.114 * teacher[..., 2]
+
+        mask = (y_t > self.mask_l_low) & (y_t < self.mask_l_high)
+
+        alpha_s = context.get("alphas")
+        if alpha_s is not None:
+            if alpha_s.dim() == 3 and alpha_s.shape[-1] == 1:
+                alpha_s = alpha_s.squeeze(-1)
+            mask = mask & (alpha_s > self.alpha_min)
+
+        alpha_t = context.get("teacher_alphas")
+        if alpha_t is not None:
+            if alpha_t.dim() == 3 and alpha_t.shape[-1] == 1:
+                alpha_t = alpha_t.squeeze(-1)
+            mask = mask & (alpha_t > self.alpha_min)
+
+        if not bool(mask.any().item()):
+            zero = student.new_zeros(())
+            return zero, {
+                "abs": 0.0,
+                "floor": 0.0,
+                "quantile": 0.0,
+                "q50_s": 0.0,
+                "q50_t": 0.0,
+                "q75_s": 0.0,
+                "q75_t": 0.0,
+                "valid_ratio": 0.0,
+            }
+
+        y_s_masked = y_s[mask]
+        y_t_masked = y_t[mask]
+
+        abs_loss = torch.abs(y_s_masked - y_t_masked).mean()
+        floor_loss = torch.relu(self.eta * y_t_masked - y_s_masked).mean()
+
+        q50_s = torch.quantile(y_s_masked, 0.5)
+        q50_t = torch.quantile(y_t_masked, 0.5)
+        q75_s = torch.quantile(y_s_masked, 0.75)
+        q75_t = torch.quantile(y_t_masked, 0.75)
+        quantile_loss = torch.relu(self.eta50 * q50_t - q50_s) + 0.5 * torch.relu(self.eta75 * q75_t - q75_s)
+
+        total = self.lambda_abs * abs_loss + self.lambda_floor * floor_loss + self.lambda_quantile * quantile_loss
+        valid_ratio = float(mask.detach().float().mean().item())
+        return total, {
+            "abs": float(abs_loss.detach().item()),
+            "floor": float(floor_loss.detach().item()),
+            "quantile": float(quantile_loss.detach().item()),
+            "q50_s": float(q50_s.detach().item()),
+            "q50_t": float(q50_t.detach().item()),
+            "q75_s": float(q75_s.detach().item()),
+            "q75_t": float(q75_t.detach().item()),
+            "valid_ratio": valid_ratio,
+        }
 
 
 
@@ -786,3 +1117,4 @@ class MultiViewReprojectionLoss(BaseLossModule):
             "src_valid": src_logs["valid_count"],
             "tgt_valid": tgt_logs["valid_count"],
         }
+

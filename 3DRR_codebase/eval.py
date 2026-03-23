@@ -85,10 +85,13 @@ def _cfg_get(cfg, key, default):
 
 def build_eval_heads(meta_cfg):
     loss_cfg = _cfg_get(meta_cfg, "LOSS", None)
+    canonical_cfg = _cfg_get(meta_cfg, "CANONICAL_CALIB", None)
     heads = []
     priors_cfg = _cfg_get(meta_cfg, "PRIORS", None)
     depth_cfg = _cfg_get(priors_cfg, "DEPTH", None)
     structure_cfg = _cfg_get(priors_cfg, "STRUCTURE", None)
+    if bool(_cfg_get(canonical_cfg, "ENABLED", False)):
+        return tuple(heads + (["depth"] if bool(_cfg_get(depth_cfg, "ENABLED", False)) else []) + (["prior"] if bool(_cfg_get(structure_cfg, "ENABLED", False)) else []))
     if bool(_cfg_get(depth_cfg, "ENABLED", False)):
         heads.append("depth")
     if bool(_cfg_get(structure_cfg, "ENABLED", False)):
@@ -99,12 +102,12 @@ def build_eval_heads(meta_cfg):
 
 
 
-def save_render_outputs(render_outputs, frame_key, output_dir):
-    final_image = render_outputs["recon_rgb"]
+def save_render_outputs(render_outputs, frame_key, output_dir, save_canonical=False):
+    final_image = render_outputs["rgb"] if save_canonical and render_outputs.get("rgb") is not None else render_outputs["recon_rgb"]
     save_image(final_image.permute(2, 0, 1).clamp(0, 1), os.path.join(output_dir, f"{frame_key}.png"))
 
     illum_aux = render_outputs.get("illum_aux")
-    if illum_aux is None:
+    if illum_aux is None or save_canonical:
         return final_image
 
     base_dir = os.path.join(output_dir, "base")
@@ -130,6 +133,8 @@ def evaluate(checkpoint_path, device="cuda"):
     config_dict["TIME_STR"] = ""
     meta_cfg = ConfigDict(config_path=config_dict)
     cfg = meta_cfg.MODEL
+    canonical_cfg = _cfg_get(meta_cfg, "CANONICAL_CALIB", None)
+    save_canonical = bool(_cfg_get(canonical_cfg, "ENABLED", False))
     render_heads = build_eval_heads(meta_cfg)
 
     test_dataset = Blender(meta_cfg.DATASET, split="test", load_images=False)
@@ -159,7 +164,7 @@ def evaluate(checkpoint_path, device="cuda"):
         camtoworld = data["transforms"].to(device)
         render_outputs = model(camtoworld, H, W, render_heads=render_heads)
         frame_key = data["infos"]["frame_key"]
-        rendered = save_render_outputs(render_outputs, frame_key, output_dir)
+        rendered = save_render_outputs(render_outputs, frame_key, output_dir, save_canonical=save_canonical)
 
         if metric_dataset is not None:
             gt_data = metric_dataset[index]

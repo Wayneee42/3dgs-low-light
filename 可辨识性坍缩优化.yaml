@@ -1,0 +1,125 @@
+这是一个**很典型的退化解**，而且更像是目标设计问题，不是你实现错了。
+按你文档里的当前设计，stage6 的核心就是
+
+[
+L = L_{\text{obs_photo}}\big(T_i(R_{\text{canon}}), I_i^{\text{low}}\big)
+
+* \lambda_{\text{view}} L_{\text{view_id}}(T_i \approx I)
+* \lambda_{\text{canon}} L_{\text{canon_exposure}}(R_{\text{canon}})
+  ]
+
+其中 `L_view_id` 把每个视角参数往 identity 拉，`L_canon_exposure` 只是把 `rgb_base_hwc` 的亮度均值弱锚到 `canonical_target_mean=0.38`。在这种组合下，最容易达到的解就是：**`R_canon ≈ 低照图`，`T_i ≈ identity`**。也就是你现在看到的“canonical 自己塌回低照域”。这和你计划里当前的 `ViewCalibrationTable=[log_a,b,u,v] + L_view_id + CanonicalExposureAnchorLoss` 完全一致。
+
+我建议你不要再继续加更强的 exposure，而是直接改 **stage6 的规范固定方式**。优先级如下。
+
+## 先做的两件事
+
+### 1）先确认不是“接线没切干净”
+
+先查这几个点，任何一个没关掉，`R_canon` 都会被继续往低照图上拉：
+
+* `CANONICAL_CALIB.ENABLED` 时，默认的 base `RGBReconstructionLoss(rendered -> supervision)` 是否真的没构建
+* `ReconstructionLoss` 是否真的没构建
+* `PROXY_TARGET`、`illum head`、`AUGMENTATION`、`MULTIVIEW` 是否都关了
+* `L_obs_photo` 的输入是不是 **`view_calibrated_hwc`**，而不是 `rgb_base_hwc`
+* `L_canon_exposure` 的输入是不是 **`rgb_base_hwc`**，不是 calibrated 图
+* `canonical_target_mean` 有没有误用训练期 jitter 的 `target_mean`
+
+这些正是你文档里 stage6 新路线要求切掉或改接线的部分。
+
+如果这几项都没问题，那就是下面这个更本质的问题：**你的 `T_i` 还太像“校正器”，不像“退化器”**。
+
+---
+
+## 真正该改的：把 `T_i` 改成“只能把 canonical 变暗”的退化模型
+
+你文档里现在的亮度变换是：
+
+[
+Y' = \sigma(a \cdot \operatorname{logit}(Y) + b)
+]
+
+这个形式的问题是：`a,b` 同时存在时，`T_i` 既能变暗，也能变亮，还能改对比。
+再叠加 `L_view_id` 拉回 identity，系统自然更喜欢：
+
+* `R_canon` 直接自己去拟合低照
+* `T_i` 少干活，靠近 identity
+
+### 最小改法
+
+第一版别用 `[log_a, b, u, v]`，先缩成 **`[d, u, v]`**：
+
+[
+d = \mathrm{softplus}(raw_d) \ge 0
+]
+
+[
+Y_{\text{obs-pred}} = \sigma(\operatorname{logit}(Y_{\text{canon}}) - d)
+]
+
+[
+C_b' = C_b + u,\quad C_r' = C_r + v
+]
+
+其中：
+
+[
+u = 0.02 \tanh(raw_u), \quad v = 0.02 \tanh(raw_v)
+]
+
+也就是：
+
+* `d` 只能让图变暗，不能变亮
+* `u,v` 只做很小的色偏补偿
+* 第一版先不要 `a`
+
+这样 `T_i` 就从“自由校正器”变成了“单向退化器”。
+只要 `R_canon` 比输入亮，`T_i` 就能解释观测；反过来，如果 `R_canon` 想塌回低照，`T_i` 就失去存在价值了。
+
+这一步我认为是**最关键**的，不是可选项。
+
+---
+
+## 第二个关键改法：不要再用 identity prior，改成“以低照退化初值为中心的 prior”
+
+你现在的 `L_view_id` 本质上是在鼓励所有视角：
+
+[
+T_i \approx I
+]
+
+这和“希望 canonical 比观测更亮”是冲突的。
+因为如果观测本来就是低照，那最便宜的解永远是 `R_canon` 变低照，`T_i` 回 identity。
+
+### 改成这样
+
+先从原始低照图里，给每个 train view 估一个初始暗化量 `d_i^0`：
+
+[
+m_i = \operatorname{median}(Y_i^{obs})
+]
+
+[
+m_c = \text{canonical target mean/median}
+]
+
+[
+d_i^0 = \operatorname{clip}\big(\operatorname{logit}(m_c) - \operatorname{logit}(m_i),\ 0,\ d_{\max}\big)
+]
+
+然后 prior 改成：
+
+[
+L_{\text{view-prior}} = (d_i - d_i^0)^2 + \rho(u_i^2 + v_i^2)
+]
+
+而不是原来的 identity loss。
+
+直观上就是：
+
+* 不是要求每个 view “别变”
+* 而是要求每个 view “按它自己的低照程度去变暗”
+
+这会直接解决你现在这个退化方向。
+
+---

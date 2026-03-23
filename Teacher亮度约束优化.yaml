@@ -1,0 +1,135 @@
+## 目标
+
+**“让 stage5b_ft 负责颜色 + 给 stage6 一个亮度下限；让 `view_calibration` 只在前期做低照拟合，后期不要继续把 canonical 拉暗。”**
+
+---
+
+## 二、我建议的 v4：不改大框架，只改 3 件事
+
+### 1）把 `VIEW_ONLY_STEPS` 从 0 改成一个正数
+
+这是我最推荐的第一刀。
+
+因为现在从 step 1 起 `sh0/shN` 就和 `view_calibration` 一起更新，`obs_photo` 会直接把 canonical 往低照域拉。
+更合理的是让前期先由 `view_calibration` 去吃掉低照观测差异，再让 `sh` 接手细化外观。
+
+### 推荐值
+
+先试：
+
+* `VIEW_ONLY_STEPS = 300`
+  如果还偏暗，再试：
+* `VIEW_ONLY_STEPS = 500`
+
+这一步基本不改模型，只改你文档第 7 节那个 optimizer gate 的配置。
+
+### 为什么这一步值钱
+
+你现在日志里 `d` 前期增长很快，说明系统本来就愿意用 `view_calibration` 去解释低照。既然如此，就别让 `sh0/shN` 从第 1 步开始一起背锅。
+
+---
+
+### 2）在 `teacher_color` 之外，加一个 **teacher luminance floor**
+
+你已经证明了 stage5b_ft checkpoint 作为色彩锚点是有效的。
+下一步最自然的延伸不是“更强 exposure”，而是：
+
+**让 stage5b_ft 再给 student 一个亮度下限，但不是亮度真值。**
+
+也就是：
+
+* teacher 继续只作为 reference
+* student 可以比 teacher 更亮
+* 但不应该比 teacher 更暗很多
+
+### 具体实现
+
+仍然作用在 `rgb_base_hwc`，不是 `view_calibrated_hwc`。
+
+记：
+
+* `Y_t`：teacher `rgb_base_hwc` 的亮度
+* `Y_s`：student `rgb_base_hwc` 的亮度
+
+定义 mask：
+[
+M_y=(Y_t>\tau_{low})\land(Y_t<\tau_{high})\land(\alpha_t>\tau_\alpha)\land(\alpha_s>\tau_\alpha)
+]
+
+推荐初值：
+
+* `tau_low = 0.18`
+* `tau_high = 0.9`
+* `tau_alpha = 0.2`
+
+### 像素级 floor
+
+[
+L_{y_floor}=\operatorname{mean}\big[M_y\cdot \operatorname{ReLU}(\eta ,Y_t - Y_s)\big]
+]
+
+推荐：
+
+* `eta = 0.9`
+* `lambda_y_floor = 0.02`
+
+意思就是：
+**student 可比 teacher 亮，但不能比 teacher 暗超过 10% 左右。**
+
+### 帧级 quantile floor
+
+再加一个更稳的统计约束：
+
+[
+L_{y_quant}=
+\operatorname{ReLU}(\eta_{50}Q50(Y_t[M_y])-Q50(Y_s[M_y]))
++0.5\operatorname{ReLU}(\eta_{75}Q75(Y_t[M_y])-Q75(Y_s[M_y]))
+]
+
+推荐：
+
+* `eta50 = 0.9`
+* `eta75 = 0.9`
+* `lambda_y_quant = 0.02`
+
+这比单独把 `w_exp` 调大更稳，因为它不是固定 target，而是**场景自适应地参考 stage5b_ft**。
+
+---
+
+### 3）中后期抑制 `view_calibration`，尤其是 `d`
+
+你现在最明显的现象是：
+颜色已经正常，但 `d` 继续长，结果 canonical 比 stage5b_ft 更暗。
+
+所以 stage6 不能再是“全程同样力度地更新 view_calibration”。
+我建议把 stage6 拆成 3 段：
+
+#### Phase A：`0 ~ VIEW_ONLY_STEPS`
+
+* 只更新 `view_calibration`
+* `sh0/shN` 冻结
+* 几何继续冻结
+
+#### Phase B：`VIEW_ONLY_STEPS ~ 1500`
+
+* 更新 `view_calibration + sh0/shN`
+* 开 `teacher_color`
+* 开 `teacher_luminance_floor`
+* 保持 `canon_exp`
+
+#### Phase C：`1500 ~ end`
+
+* **把 `LR_VIEW_CALIB` 乘 0.1**
+* 或者更激进：只冻结 `raw_d`，保留 `s/u/v` 微调
+* `sh0/shN` 继续更新
+* teacher losses 继续开
+
+如果你现在不想改 param-group 太多，最省事的版本就是：
+
+* `step == 1500` 时
+  `LR_VIEW_CALIB *= 0.1`
+
+如果这一版出来立刻更亮，说明根因就是：
+**后半程 `d` 还在持续吞掉亮度。**
+
+---
